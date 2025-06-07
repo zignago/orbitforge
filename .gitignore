@@ -1,0 +1,13 @@
+# VS Code / Cursor
+.vscode/
+.devcontainer/
+# Python
+__pycache__/
+*.py[cod]
+# Conda & venvs
+.env/
+.envrc
+.env/
+# DVC cache (kept out of Git)
+.cache/
+# large binary tracked by LFS handled separately
