@@ -10,6 +10,10 @@ setup(
         "pytest>=7.0.0",
         "rich>=10.0.0",
         "pyyaml>=6.0.0",
+        "numpy>=1.21.0",
+        "scipy>=1.7.0",
+        "gmsh>=4.11.0",
+        "loguru>=0.6.0",
     ],
     entry_points={
         "console_scripts": [

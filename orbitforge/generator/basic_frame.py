@@ -24,12 +24,15 @@ def calculate_volume_m3(shape) -> float:
     return props.Mass()  # This is actually volume since we didn't set density
 
 
-def build_basic_frame(ms: MissionSpec, out_dir: Path) -> None:
+def build_basic_frame(ms: MissionSpec, out_dir: Path) -> Path:
     """Build a basic CubeSat frame from mission specs.
 
     Args:
         ms: Mission specification with dimensions and material
         out_dir: Output directory for generated files
+
+    Returns:
+        Path to the generated STEP file
     """
     # Convert dimensions to meters (OCC uses meters)
     u = 0.1  # 1U = 10 cm = 0.1 m
@@ -86,3 +89,5 @@ def build_basic_frame(ms: MissionSpec, out_dir: Path) -> None:
     with open(out_dir / "mass_budget.csv", "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerows(mass_budget)
+
+    return step_file
