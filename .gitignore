@@ -1,17 +1,16 @@
-# VS Code / Cursor
 .vscode/
 .devcontainer/
-# Python
 __pycache__/
 docs/
 outputs/
 my_outputs/
 *.egg-info/
 *.py[cod]
-# Conda & venvs
 .env/
 .envrc
 .env/
-# DVC cache (kept out of Git)
 .cache/
-# large binary tracked by LFS handled separately
+.dvc/cache/
+.dvc/tmp/
+*.local
+.dvc/lock
