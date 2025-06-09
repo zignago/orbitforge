@@ -1,0 +1,9 @@
+Al_6061_T6:
+  density_kg_m3: 2700
+  description: "Standard aluminum alloy for CubeSat structures"
+  yield_mpa: 276
+
+Ti_6Al_4V:
+  density_kg_m3: 4430
+  description: "Titanium alloy optimized for additive manufacturing"
+  yield_mpa: 880 

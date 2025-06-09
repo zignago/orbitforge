@@ -6,11 +6,13 @@ dependencies:
   - conda[version='>=25.3.0']
   - mamba[version='>=2.1.1']
   - pip
+  - pydantic
   - pytorch
   - pytorch-cuda=12.4
   - torchvision
   - torchaudio
   - pytorch3d
+  - pythonocc-core
   - torch-geometric
   - open3d
   - trimesh

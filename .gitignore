@@ -3,6 +3,10 @@
 .devcontainer/
 # Python
 __pycache__/
+docs/
+outputs/
+my_outputs/
+*.egg-info/
 *.py[cod]
 # Conda & venvs
 .env/
