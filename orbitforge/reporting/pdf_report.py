@@ -3,6 +3,7 @@
 import csv
 from pathlib import Path
 from typing import Dict, Any
+from datetime import datetime
 from collections import defaultdict
 
 from reportlab.lib import colors
@@ -71,7 +72,7 @@ def generate_report(
     content.append(Paragraph(f"OrbitForge Design Report", title_style))
     content.append(
         Paragraph(
-            "Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}", normal_style
+            f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}", normal_style
         )
     )
     content.append(Spacer(1, 0.2 * inch))
