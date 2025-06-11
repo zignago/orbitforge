@@ -31,9 +31,18 @@ def create_stress_chart(results: Dict[str, Any]) -> Drawing:
     bc.height = 125
     bc.width = 300
 
-    bc.data = [[results["max_stress_mpa"]], [results["sigma_allow_mpa"]]]
+    # Get values with defaults
+    max_stress = (
+        results.get("max_stress_mpa", 0) or results.get("max_stress_MPa", 0) or 0
+    )
+    allow_stress = (
+        results.get("sigma_allow_mpa", 0) or results.get("sigma_allow_MPa", 0) or 0
+    )
+    status = results.get("status", "UNKNOWN")
+
+    bc.data = [[max_stress], [allow_stress]]
     bc.categoryAxis.categoryNames = ["Max Stress", "Allowable"]
-    bc.bars[0].fillColor = colors.red if results["status"] == "FAIL" else colors.green
+    bc.bars[0].fillColor = colors.red if status == "FAIL" else colors.green
     bc.bars[1].fillColor = colors.blue
 
     drawing.add(bc)
@@ -131,87 +140,102 @@ def generate_report(
 
     # Structural Analysis
     content.append(Paragraph("Structural Analysis", heading_style))
-    stress_status = physics_results["status"]
-    stress_color = colors.red if stress_status == "FAIL" else colors.green
-    content.append(
-        Paragraph(
-            f"Status: <font color={stress_color}>{stress_status}</font>", normal_style
-        )
-    )
-    content.append(create_stress_chart(physics_results))
 
-    if physics_results.get("thermal_stress_MPa"):
+    # Handle missing or empty physics results
+    if physics_results and "status" in physics_results:
+        stress_status = physics_results["status"]
+        stress_color = colors.red if stress_status == "FAIL" else colors.green
         content.append(
             Paragraph(
-                f"Thermal Stress: {physics_results['thermal_stress_MPa']:.1f} MPa",
+                f"Status: <font color={stress_color}>{stress_status}</font>",
                 normal_style,
             )
         )
-        content.append(
-            Paragraph(
-                f"Thermal Status: {physics_results['thermal_status']}", normal_style
+        content.append(create_stress_chart(physics_results))
+
+        if physics_results.get("thermal_stress_MPa"):
+            content.append(
+                Paragraph(
+                    f"Thermal Stress: {physics_results['thermal_stress_MPa']:.1f} MPa",
+                    normal_style,
+                )
             )
+            content.append(
+                Paragraph(
+                    f"Thermal Status: {physics_results['thermal_status']}", normal_style
+                )
+            )
+    else:
+        content.append(
+            Paragraph("No structural analysis results available", normal_style)
         )
     content.append(Spacer(1, 0.2 * inch))
 
     # DfAM Analysis
     content.append(Paragraph("Manufacturability Analysis", heading_style))
-    dfam_status = dfam_results["status"]
-    dfam_color = colors.red if dfam_status == "FAIL" else colors.green
-    content.append(
-        Paragraph(
-            f"Status: <font color={dfam_color}>{dfam_status}</font>", normal_style
-        )
-    )
-    content.append(
-        Paragraph(
-            f"Errors: {dfam_results['error_count']}, Warnings: {dfam_results['warning_count']}",
-            normal_style,
-        )
-    )
-
-    if dfam_results["violations"]:
-        # Group violations by (rule, severity, message, value, limit)
-        grouped = defaultdict(int)
-        for v in dfam_results["violations"]:
-            key = (
-                v["rule"],
-                v["severity"],
-                v["message"],
-                round(v["value"], 2),
-                round(v["limit"], 2),
-            )
-            grouped[key] += 1
-
-        # Table header
-        violation_data = [["Rule", "Severity", "Message", "Value", "Limit", "Count"]]
-
-        # Add each grouped entry
-        for (rule, severity, message, value, limit), count in grouped.items():
-            violation_data.append(
-                [
-                    rule,
-                    severity,
-                    message,
-                    f"{value:.2f}",
-                    f"{limit:.2f}",
-                    f"×{count}",
-                ]
-            )
-
-        violation_table = Table(violation_data)
-        violation_table.setStyle(
-            TableStyle(
-                [
-                    ("GRID", (0, 0), (-1, -1), 1, colors.black),
-                    ("BACKGROUND", (0, 0), (-1, 0), colors.grey),
-                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
-                    ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                ]
+    if dfam_results and "status" in dfam_results:
+        dfam_status = dfam_results["status"]
+        dfam_color = colors.red if dfam_status == "FAIL" else colors.green
+        content.append(
+            Paragraph(
+                f"Status: <font color={dfam_color}>{dfam_status}</font>", normal_style
             )
         )
-        content.append(violation_table)
+        content.append(
+            Paragraph(
+                f"Errors: {dfam_results.get('error_count', 0)}, Warnings: {dfam_results.get('warning_count', 0)}",
+                normal_style,
+            )
+        )
+
+        if dfam_results.get("violations"):
+            # Group violations by (rule, severity, message, value, limit)
+            grouped = defaultdict(int)
+            for v in dfam_results["violations"]:
+                key = (
+                    v["rule"],
+                    v["severity"],
+                    v["message"],
+                    round(v["value"], 2),
+                    round(v["limit"], 2),
+                )
+                grouped[key] += 1
+
+            # Table header
+            violation_data = [
+                ["Rule", "Severity", "Message", "Value", "Limit", "Count"]
+            ]
+
+            # Add each grouped entry
+            for (rule, severity, message, value, limit), count in grouped.items():
+                violation_data.append(
+                    [
+                        rule,
+                        severity,
+                        message,
+                        f"{value:.2f}",
+                        f"{limit:.2f}",
+                        f"×{count}",
+                    ]
+                )
+
+            violation_table = Table(violation_data)
+            violation_table.setStyle(
+                TableStyle(
+                    [
+                        ("GRID", (0, 0), (-1, -1), 1, colors.black),
+                        ("BACKGROUND", (0, 0), (-1, 0), colors.grey),
+                        ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
+                        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                    ]
+                )
+            )
+            content.append(violation_table)
+    else:
+        content.append(
+            Paragraph("No manufacturability analysis results available", normal_style)
+        )
 
     # Build PDF
     doc.build(content)
