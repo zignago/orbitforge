@@ -241,3 +241,36 @@ def test_full_workflow_6u(runner, mission_specs, tmp_path):
         lines = f.readlines()
         total_mass = float(lines[-1].split(",")[-1])
         assert 0.4 <= total_mass <= 8.0  # 6U Ti frame typical range
+
+
+# CLI quality tests
+def test_cli_help(runner):
+    """Ensure CLI help message works and includes usage info."""
+    result = runner.invoke(app, ["--help"])
+    assert result.exit_code == 0
+    assert "Usage" in result.stdout
+    assert "Generate CubeSat structures" in result.stdout
+
+
+def test_invalid_command(runner):
+    """Test that invalid CLI commands return an error."""
+    result = runner.invoke(app, ["invalid"])
+    assert result.exit_code != 0
+    assert "No such command" in result.stderr
+
+
+def test_missing_argument(runner):
+    """Test that missing required arguments causes an error."""
+    result = runner.invoke(app, ["run"])
+    assert result.exit_code != 0
+    assert "Missing argument" in result.stderr
+
+
+def test_invalid_json_file(tmp_path, runner):
+    """Test that an invalid mission file is gracefully rejected."""
+    bad_file = tmp_path / "invalid.json"
+    bad_file.write_text("this is not valid json")
+
+    result = runner.invoke(app, ["run", str(bad_file)])
+    assert result.exit_code != 0
+    assert "Invalid JSON" in result.stdout or "expected" in result.stdout
