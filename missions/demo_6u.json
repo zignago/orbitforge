@@ -1,0 +1,9 @@
+{
+    "bus_u": 6,
+    "payload_mass_kg": 2.5,
+    "orbit_alt_km": 600,
+    "mass_limit_kg": 8.0,
+    "rail_mm": 4.0,
+    "deck_mm": 3.0,
+    "material": "Ti_6Al_4V"
+} 
