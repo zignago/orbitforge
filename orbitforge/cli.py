@@ -30,6 +30,14 @@ app = typer.Typer(
 console = Console()
 
 
+def get_status(obj):
+    if hasattr(obj, "status"):
+        return obj.status
+    elif isinstance(obj, dict):
+        return obj.get("status")
+    return None
+
+
 @app.command(name="run")
 def run_mission(
     mission_json: Path = typer.Argument(
@@ -337,9 +345,9 @@ def run_mission(
                     raise typer.Exit(1)
 
             # Exit with status code if validation failed
-            if check and physics_results and physics_results.status != "PASS":
+            if check and physics_results and get_status(physics_results) != "PASS":
                 raise typer.Exit(1)
-            if dfam and dfam_results and dfam_results["status"] != "PASS":
+            if dfam and dfam_results and get_status(dfam_results) != "PASS":
                 raise typer.Exit(1)
 
         except ValueError as e:
