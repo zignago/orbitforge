@@ -1,3 +1,5 @@
+"""Tests foundational skeleton generator functionality."""
+
 import json
 import csv
 import pytest
