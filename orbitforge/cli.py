@@ -148,6 +148,14 @@ def run_mission(
                         f"Status: [{'green' if physics_results.thermal_status == 'PASS' else 'red'}]{physics_results.thermal_status}[/]"
                     )
 
+                    if check and physics_results:
+                        if (
+                            physics_results.status != "PASS"
+                            or getattr(physics_results, "thermal_status", "PASS")
+                            == "FAIL"
+                        ):
+                            raise typer.Exit(1)
+
                 console.print(f"\nDetailed results saved to [blue]{results_file}[/]")
 
             except Exception as e:
