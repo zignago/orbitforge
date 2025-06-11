@@ -8,8 +8,12 @@ from rich.console import Console
 from rich.table import Table
 from loguru import logger
 import sys
+import json
 from .generator.mission import MissionSpec, Material, load_materials
 from .fea import FastPhysicsValidator, MaterialProperties
+from .dfam.rules import DfamChecker
+from .reporting.pdf_report import generate_report
+from dataclasses import asdict, is_dataclass
 
 # Configure logger
 logger.remove()  # Remove default handler
@@ -44,6 +48,8 @@ def run_mission(
         None, "--material", "-m", help="Material selection (overrides spec)"
     ),
     check: bool = typer.Option(False, "--check", help="Run fast physics validation"),
+    dfam: bool = typer.Option(False, "--dfam", help="Run DfAM checks"),
+    report: bool = typer.Option(False, "--report", help="Generate PDF report"),
     verbose: bool = typer.Option(
         False, "--verbose", "-v", help="Enable verbose output"
     ),
@@ -78,17 +84,19 @@ def run_mission(
 
     # Generate frame
     try:
-        print("Building frame...")  # Debug print
+        console.print("Building frame...")
         step_file = build_basic_frame(spec, design_dir)
         console.print(f"✓ Generated frame at [blue]{design_dir}[/]")
 
+        # Store results for report
+        physics_results = None
+        dfam_results = None
+
         # Run physics validation if requested
         if check:
-            print("Starting validation...")  # Debug print
             console.print("\nRunning fast physics validation...")
             try:
                 if verbose:
-                    print("Verbose mode enabled")  # Debug print
                     console.print("\nMaterial properties from spec:")
                     console.print(f"Material: {spec.material}")
                     console.print(f"Yield strength: {spec.yield_mpa} MPa")
@@ -109,34 +117,34 @@ def run_mission(
 
                 # Run validation
                 validator = FastPhysicsValidator(step_file, material_props)
-                results = validator.validate()
+                physics_results = validator.run_validation()
 
                 # Save results
                 results_file = design_dir / "physics_check.json"
-                validator.save_results(results, results_file)
+                validator.save_results(physics_results, results_file)
 
                 # Print results
                 console.print("\n[bold]Physics Validation Results:[/]")
-                console.print(f"Maximum Stress: {results.max_stress_mpa:.1f} MPa")
-                console.print(f"Allowable Stress: {results.sigma_allow_mpa:.1f} MPa")
                 console.print(
-                    f"Status: [{'green' if results.status == 'PASS' else 'red'}]{results.status}[/]"
+                    f"Maximum Stress: {physics_results.max_stress_mpa:.1f} MPa"
+                )
+                console.print(
+                    f"Allowable Stress: {physics_results.sigma_allow_mpa:.1f} MPa"
+                )
+                console.print(
+                    f"Status: [{'green' if physics_results.status == 'PASS' else 'red'}]{physics_results.status}[/]"
                 )
 
-                if results.thermal_stress_mpa is not None:
+                if physics_results.thermal_stress_mpa is not None:
                     console.print("\n[bold]Thermal Analysis:[/]")
                     console.print(
-                        f"Thermal Stress: {results.thermal_stress_mpa:.1f} MPa"
+                        f"Thermal Stress: {physics_results.thermal_stress_mpa:.1f} MPa"
                     )
                     console.print(
-                        f"Status: [{'green' if results.thermal_status == 'PASS' else 'red'}]{results.thermal_status}[/]"
+                        f"Status: [{'green' if physics_results.thermal_status == 'PASS' else 'red'}]{physics_results.thermal_status}[/]"
                     )
 
                 console.print(f"\nDetailed results saved to [blue]{results_file}[/]")
-
-                # Exit with status code if validation failed
-                if results.status != "PASS":
-                    raise typer.Exit(1)
 
             except Exception as e:
                 console.print(f"\n[red]Error during physics validation:[/] {str(e)}")
@@ -146,6 +154,97 @@ def run_mission(
                     console.print("\nFull traceback:")
                     console.print(traceback.format_exc())
                 raise typer.Exit(1)
+
+        # Run DfAM checks if requested
+        if dfam:
+            console.print("\nRunning DfAM checks...")
+            try:
+                checker = DfamChecker(design_dir / "frame.stl")
+                dfam_results = checker.run_all_checks()
+
+                # Save results
+                dfam_file = design_dir / "manufacturability.json"
+                with open(dfam_file, "w") as f:
+                    json.dump(dfam_results, f, indent=2)
+
+                # Print summary
+                console.print("\n[bold]DfAM Check Results:[/]")
+                console.print(
+                    f"Status: [{'green' if dfam_results['status'] == 'PASS' else 'red'}]{dfam_results['status']}[/]"
+                )
+                console.print(f"Errors: {dfam_results['error_count']}")
+                console.print(f"Warnings: {dfam_results['warning_count']}")
+
+                if dfam_results["violations"]:
+                    console.print("\nViolations:")
+                    for v in dfam_results["violations"]:
+                        color = "red" if v["severity"] == "ERROR" else "yellow"
+                        console.print(
+                            f"[{color}]{v['severity']}[/] {v['rule']}: {v['message']} "
+                            f"(value: {v['value']:.2f}, limit: {v['limit']:.2f})"
+                        )
+
+                console.print(f"\nDetailed results saved to [blue]{dfam_file}[/]")
+
+            except Exception as e:
+                console.print(f"\n[red]Error during DfAM checks:[/] {str(e)}")
+                if verbose:
+                    import traceback
+
+                    console.print("\nFull traceback:")
+                    console.print(traceback.format_exc())
+                raise typer.Exit(1)
+
+        # Generate PDF report if requested
+        if report:
+            console.print("\nGenerating PDF report...")
+            try:
+                # Load results if not already in memory
+                if (
+                    physics_results is None
+                    and (design_dir / "physics_check.json").exists()
+                ):
+                    with open(design_dir / "physics_check.json") as f:
+                        physics_results = json.load(f)
+
+                if (
+                    dfam_results is None
+                    and (design_dir / "manufacturability.json").exists()
+                ):
+                    with open(design_dir / "manufacturability.json") as f:
+                        dfam_results = json.load(f)
+
+                # Ensure both are dictionaries
+                if is_dataclass(physics_results):
+                    physics_results = asdict(physics_results)
+                if is_dataclass(dfam_results):
+                    dfam_results = asdict(dfam_results)
+
+                # Generate report
+                pdf_file = generate_report(
+                    design_dir=design_dir,
+                    mission_spec=spec.model_dump(),
+                    physics_results=physics_results or {},
+                    dfam_results=dfam_results
+                    or {"status": "NOT RUN", "violations": []},
+                )
+
+                console.print(f"\nReport generated at [blue]{pdf_file}[/]")
+
+            except Exception as e:
+                console.print(f"\n[red]Error generating report:[/] {str(e)}")
+                if verbose:
+                    import traceback
+
+                    console.print("\nFull traceback:")
+                    console.print(traceback.format_exc())
+                raise typer.Exit(1)
+
+        # Exit with status code if validation failed
+        if check and physics_results and physics_results["status"] != "PASS":
+            raise typer.Exit(1)
+        if dfam and dfam_results and dfam_results["status"] != "PASS":
+            raise typer.Exit(1)
 
     except ValueError as e:
         console.print(f"[red]Error:[/] {e}")

@@ -14,3 +14,4 @@ my_outputs/
 .dvc/tmp/
 *.local
 .dvc/lock
+.github/

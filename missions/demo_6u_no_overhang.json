@@ -1,0 +1,14 @@
+{
+  "bus_u": 6,
+  "payload_mass_kg": 2.5,
+  "orbit_alt_km": 500,
+  "mass_limit_kg": 10.0,
+  "rail_mm": 4.0,
+  "deck_mm": 3.0,
+  "material": "Al_6061_T6",
+  "build_direction": "z+",
+  "dfam_hints": {
+    "avoid_horizontal_faces": true,
+    "orient_for_min_support": true
+  }
+}
