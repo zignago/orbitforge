@@ -74,32 +74,39 @@ def build_basic_frame(ms: MissionSpec, out_dir: Path) -> Path:
     strut_width = 0.75 * rail
 
     # Create and position struts at each level
-    for level in range(ms.bus_u):
-        z = level * u + deck
+    # Add straight, internal cross-struts at each 1U level
+    for level in range(1, ms.bus_u):
+        z = level * u  # Z position between decks
 
-        # First diagonal strut
-        strut1 = _translate(
-            BRepPrimAPI_MakeBox(u * 1.414, strut_width, strut_width).Shape(), 0, 0, z
-        )
-        tr = gp_Trsf()
-        # Create rotation axis using gp_Ax1 (point and direction)
-        rot_axis = gp_Ax1(gp_Pnt(0, 0, z), gp_Dir(0, 0, 1))
-        tr.SetRotation(rot_axis, 0.785398)  # 45 degrees
-        strut1.Move(TopLoc_Location(tr))
+        # Shared sizes
+        strut_height = strut_width
+        strut_depth = strut_width
 
-        # Second diagonal strut
-        strut2 = _translate(
-            BRepPrimAPI_MakeBox(u * 1.414, strut_width, strut_width).Shape(), u, 0, z
-        )
-        tr2 = gp_Trsf()
-        rot_axis2 = gp_Ax1(gp_Pnt(u, 0, z), gp_Dir(0, 0, 1))
-        tr2.SetRotation(rot_axis2, -0.785398)  # -45 degrees
-        strut2.Move(TopLoc_Location(tr2))
+        # X-span (left/right face): along X axis
+        strut_x = BRepPrimAPI_MakeBox(x, strut_height, strut_depth).Shape()
 
-        components.append(strut1)
-        components.append(strut2)
-        strut_volumes.append(u * 1.414 * strut_width * strut_width)
-        strut_volumes.append(u * 1.414 * strut_width * strut_width)
+        # Y-span (front/back face): along Y axis
+        strut_y = BRepPrimAPI_MakeBox(strut_height, x, strut_depth).Shape()
+
+        # FRONT face (Y = rail)
+        front_strut = _translate(strut_x, rail, rail, z)
+        components.append(front_strut)
+        strut_volumes.append(x * strut_width * strut_width)
+
+        # BACK face (Y = back rail)
+        back_strut = _translate(strut_x, rail, u - rail - strut_height, z)
+        components.append(back_strut)
+        strut_volumes.append(x * strut_width * strut_width)
+
+        # LEFT face (X = rail)
+        left_strut = _translate(strut_y, rail, rail, z)
+        components.append(left_strut)
+        strut_volumes.append(x * strut_width * strut_width)
+
+        # RIGHT face (X = right rail)
+        right_strut = _translate(strut_y, u - rail - strut_height, rail, z)
+        components.append(right_strut)
+        strut_volumes.append(x * strut_width * strut_width)
 
     # Fuse all components
     frame = components[0]
