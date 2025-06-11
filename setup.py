@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="orbitforge",
-    version="0.1.2",
+    version="0.1.3",
     packages=find_packages(),
     python_requires=">=3.9",
     install_requires=[
@@ -17,6 +17,7 @@ setup(
         "reportlab>=4.0.0",
         "PyYAML>=6.0.0",
         "pythonocc-core>=7.7.0",
+        "torch>=2.0.0",
     ],
     extras_require={
         "dev": [

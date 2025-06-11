@@ -22,6 +22,31 @@ from ..fea import FastPhysicsValidator, MaterialProperties
 from ..config.design_config import config
 
 
+@dataclass
+class DesignVariant:
+    """Represents a single design variant with its parameters and results."""
+
+    design_id: str
+    rail_mm: float
+    deck_mm: float
+    material: Material
+    mass_kg: Optional[float] = None
+    max_stress_mpa: Optional[float] = None
+    status: Optional[str] = None
+    step_file: Optional[Path] = None
+    _timestamp: Optional[float] = None  # Added for cache expiry
+
+    def to_dict(self) -> Dict:
+        """Convert to dictionary for JSON serialization."""
+        result = asdict(self)
+        # Convert Path to string for JSON serialization
+        if self.step_file:
+            result["step_file"] = str(self.step_file)
+        if "_timestamp" in result:
+            del result["_timestamp"]  # Don't include in serialization
+        return result
+
+
 class DesignCache:
     """Cache for design results to avoid redundant computations."""
 
@@ -29,14 +54,17 @@ class DesignCache:
         self._cache: Dict[str, Tuple[float, Any]] = {}  # (timestamp, data)
         self._max_size_mb = max_size_mb
         self._cleanup_threshold = 0.9  # Cleanup when 90% full
+        self._seed_cache: Dict[int, List[DesignVariant]] = {}  # Cache by seed
 
     def _make_key(self, **kwargs) -> str:
         """Create a cache key from parameters."""
-        # Round float values to 3 decimal places for consistent keys
+        # Round float values to 6 decimal places for better precision
         formatted_kwargs = {}
         for k, v in sorted(kwargs.items()):
             if isinstance(v, float):
-                formatted_kwargs[k] = f"{v:.3f}"
+                formatted_kwargs[k] = f"{v:.6f}"
+            elif isinstance(v, Material):
+                formatted_kwargs[k] = v.value
             else:
                 formatted_kwargs[k] = str(v)
         return "|".join(f"{k}={v}" for k, v in sorted(formatted_kwargs.items()))
@@ -45,7 +73,8 @@ class DesignCache:
         """Estimate current cache size in MB."""
         import sys
 
-        return sys.getsizeof(self._cache) / (1024 * 1024)
+        total_size = sys.getsizeof(self._cache) + sys.getsizeof(self._seed_cache)
+        return total_size / (1024 * 1024)
 
     def _cleanup_old_entries(self):
         """Remove old entries if cache is too large."""
@@ -55,8 +84,17 @@ class DesignCache:
         current_time = time.time()
         expiry_time = current_time - (config.resources.CACHE_EXPIRY_HOURS * 3600)
 
+        # Clean parameter cache
         self._cache = {
             k: (t, d) for k, (t, d) in self._cache.items() if t > expiry_time
+        }
+
+        # Clean seed cache older than 1 hour
+        seed_expiry = current_time - 3600  # 1 hour
+        self._seed_cache = {
+            k: v
+            for k, v in self._seed_cache.items()
+            if v and getattr(v[0], "_timestamp", current_time) > seed_expiry
         }
 
     def get(self, **kwargs) -> Optional[Any]:
@@ -75,31 +113,21 @@ class DesignCache:
         key = self._make_key(**kwargs)
         self._cache[key] = (time.time(), data)
 
+    def get_by_seed(self, seed: int) -> Optional[List[DesignVariant]]:
+        """Get cached variants for a specific seed."""
+        return self._seed_cache.get(seed)
+
+    def put_by_seed(self, seed: int, variants: List[DesignVariant]):
+        """Cache variants for a specific seed."""
+        # Add timestamp to variants for expiry
+        current_time = time.time()
+        for variant in variants:
+            variant._timestamp = current_time
+        self._seed_cache[seed] = variants
+
 
 # Global cache instance
 _design_cache = DesignCache()
-
-
-@dataclass
-class DesignVariant:
-    """Represents a single design variant with its parameters and results."""
-
-    design_id: str
-    rail_mm: float
-    deck_mm: float
-    material: Material
-    mass_kg: Optional[float] = None
-    max_stress_mpa: Optional[float] = None
-    status: Optional[str] = None
-    step_file: Optional[Path] = None
-
-    def to_dict(self) -> Dict:
-        """Convert to dictionary for JSON serialization."""
-        result = asdict(self)
-        # Convert Path to string for JSON serialization
-        if self.step_file:
-            result["step_file"] = str(self.step_file)
-        return result
 
 
 class ParameterJitter:
@@ -110,18 +138,36 @@ class ParameterJitter:
         self.seed = seed
         self.rng = random.Random(seed)
         self._used_combinations: Set[str] = set()
+        self._jitter_sequence = []  # Store sequence of jitters
+        self._sequence_index = 0
         logger.info(f"Initialized parameter jitter with seed: {seed}")
 
     def reset(self):
         """Reset the random number generator to initial state."""
         self.rng = random.Random(self.seed)
         self._used_combinations.clear()
+        self._jitter_sequence = []
+        self._sequence_index = 0
+
+    def _get_next_jitter(self, min_val: float, max_val: float) -> float:
+        """Get next jitter value, either from sequence or generate new."""
+        if self._sequence_index < len(self._jitter_sequence):
+            # Replay from sequence
+            jitter = self._jitter_sequence[self._sequence_index]
+            self._sequence_index += 1
+            return jitter
+
+        # Generate new jitter
+        jitter = self.rng.uniform(min_val, max_val)
+        self._jitter_sequence.append(jitter)
+        self._sequence_index += 1
+        return jitter
 
     def _is_unique_combination(
         self, rail: float, deck: float, material: Material
     ) -> bool:
         """Check if parameter combination is unique."""
-        key = f"{rail:.3f}|{deck:.3f}|{material.value}"
+        key = f"{rail:.6f}|{deck:.6f}|{material.value}"  # Increased precision
         if key in self._used_combinations:
             return False
         self._used_combinations.add(key)
@@ -131,16 +177,16 @@ class ParameterJitter:
         self, base_value: float, variation_mm: float = config.params.RAIL_VARIATION_MM
     ) -> float:
         """Apply random jitter to rail thickness within bounds."""
-        jitter = self.rng.uniform(-variation_mm, variation_mm)
+        jitter = self._get_next_jitter(-variation_mm, variation_mm)
         result = round(
             max(
                 config.params.MIN_RAIL_THICKNESS,
                 min(config.params.MAX_RAIL_THICKNESS, base_value + jitter),
             ),
-            3,  # Round to 3 decimal places for consistency
+            6,  # Increased precision
         )
         logger.debug(
-            f"Rail thickness: {base_value:.2f} → {result:.2f} mm (jitter: {jitter:+.2f})"
+            f"Rail thickness: {base_value:.3f} → {result:.3f} mm (jitter: {jitter:+.3f})"
         )
         return result
 
@@ -148,16 +194,16 @@ class ParameterJitter:
         self, base_value: float, variation_mm: float = config.params.DECK_VARIATION_MM
     ) -> float:
         """Apply random jitter to deck thickness within bounds."""
-        jitter = self.rng.uniform(-variation_mm, variation_mm)
+        jitter = self._get_next_jitter(-variation_mm, variation_mm)
         result = round(
             max(
                 config.params.MIN_DECK_THICKNESS,
                 min(config.params.MAX_DECK_THICKNESS, base_value + jitter),
             ),
-            3,  # Round to 3 decimal places for consistency
+            6,  # Increased precision
         )
         logger.debug(
-            f"Deck thickness: {base_value:.2f} → {result:.2f} mm (jitter: {jitter:+.2f})"
+            f"Deck thickness: {base_value:.3f} → {result:.3f} mm (jitter: {jitter:+.3f})"
         )
         return result
 
@@ -167,12 +213,15 @@ class ParameterJitter:
         change_probability: float = config.params.MATERIAL_CHANGE_PROBABILITY,
     ) -> Material:
         """Occasionally change material with given probability."""
-        if self.rng.random() < change_probability:
+        change = self._get_next_jitter(0, 1) < change_probability
+        if change:
             # Switch between available materials
             materials = sorted(list(Material))  # Sort for consistency
             other_materials = [m for m in materials if m != base_material]
             if other_materials:
-                result = self.rng.choice(other_materials)
+                # Use deterministic selection based on sequence
+                index = int(self._get_next_jitter(0, len(other_materials) - 0.001))
+                result = other_materials[index]
                 logger.debug(f"Material: {base_material.value} → {result.value}")
                 return result
         return base_material
@@ -263,13 +312,14 @@ class MultiDesignGenerator:
         """Initialize the multi-design generator."""
         self.base_spec = base_spec
         self.num_variants = min(max(1, num_variants), 10)  # Clamp between 1-10
+        self.seed = seed
         self.jitter = ParameterJitter(seed)
         self.variants: List[DesignVariant] = []
         self._executor = None
         self._process_executor = None
 
         logger.info(
-            f"Initialized multi-design generator for {self.num_variants} variants"
+            f"Initialized multi-design generator for {self.num_variants} variants (seed: {seed})"
         )
 
     def _init_executors(self):
@@ -294,6 +344,13 @@ class MultiDesignGenerator:
 
     def generate_variants(self) -> List[DesignVariant]:
         """Generate parameter variants based on the base specification."""
+        # Check seed cache first
+        cached_variants = _design_cache.get_by_seed(self.seed)
+        if cached_variants and len(cached_variants) == self.num_variants:
+            logger.info(f"Using cached variants for seed {self.seed}")
+            self.variants = cached_variants
+            return cached_variants
+
         variants = []
 
         # Reset jitter to ensure consistent results
@@ -308,15 +365,21 @@ class MultiDesignGenerator:
             )
 
             variant = DesignVariant(
-                design_id=design_id, rail_mm=rail_mm, deck_mm=deck_mm, material=material
+                design_id=design_id,
+                rail_mm=rail_mm,
+                deck_mm=deck_mm,
+                material=material,
+                _timestamp=time.time(),  # Add timestamp when creating
             )
             variants.append(variant)
 
             logger.info(
-                f"Generated variant {design_id}: rail={rail_mm:.2f}mm, deck={deck_mm:.2f}mm, material={material.value}"
+                f"Generated variant {design_id}: rail={rail_mm:.6f}mm, deck={deck_mm:.6f}mm, material={material.value}"
             )
 
         self.variants = variants
+        # Cache variants by seed
+        _design_cache.put_by_seed(self.seed, variants)
         return variants
 
     def _build_single_design(
@@ -324,14 +387,18 @@ class MultiDesignGenerator:
     ) -> DesignVariant:
         """Build a single design variant."""
         try:
-            # Check cache first
+            # Check cache first with more precise parameters
             cached_result = _design_cache.get(
                 rail_mm=variant.rail_mm,
                 deck_mm=variant.deck_mm,
-                material=variant.material.value,
+                material=variant.material,
+                design_id=variant.design_id,  # Include design_id for better uniqueness
+                seed=self.seed,  # Include seed for reproducibility
             )
             if cached_result:
                 logger.info(f"Using cached result for {variant.design_id}")
+                # Preserve the original timestamp
+                cached_result._timestamp = variant._timestamp
                 return cached_result
 
             # Create variant-specific output directory
@@ -382,14 +449,16 @@ class MultiDesignGenerator:
                         f"Failed to read mass budget for {variant.design_id}: {str(e)}"
                     )
 
-            logger.info(f"✓ Built {variant.design_id} (mass: {variant.mass_kg:.3f} kg)")
+            logger.info(f"✓ Built {variant.design_id} (mass: {variant.mass_kg:.6f} kg)")
 
-            # Cache the result
+            # Cache the result with more precise parameters
             _design_cache.put(
                 variant,
                 rail_mm=variant.rail_mm,
                 deck_mm=variant.deck_mm,
-                material=variant.material.value,
+                material=variant.material,
+                design_id=variant.design_id,
+                seed=self.seed,
             )
 
             return variant
@@ -409,24 +478,21 @@ class MultiDesignGenerator:
 
         try:
             self._init_executors()
-            # Build designs in parallel
-            futures = []
-            for variant in self.variants:
-                future = self._executor.submit(
-                    self._build_single_design, variant, output_dir
-                )
-                futures.append(future)
-
-            # Collect results
+            # Build designs sequentially to maintain order
             built_variants = []
-            for future in as_completed(futures):
+            for variant in self.variants:
                 try:
-                    variant = future.result()
-                    built_variants.append(variant)
+                    built_variant = self._build_single_design(variant, output_dir)
+                    built_variants.append(built_variant)
                 except Exception as e:
-                    logger.error(f"Parallel build failed: {str(e)}")
+                    logger.error(f"Build failed for {variant.design_id}: {str(e)}")
+                    variant.status = "BUILD_FAILED"
+                    built_variants.append(variant)
 
+            # Cache the built variants
+            _design_cache.put_by_seed(self.seed, built_variants)
             return built_variants
+
         except Exception as e:
             logger.error(f"Build designs failed: {str(e)}")
             raise

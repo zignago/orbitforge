@@ -14,6 +14,7 @@ from .fea import FastPhysicsValidator, MaterialProperties
 from .dfam.rules import DfamChecker
 from .reporting.pdf_report import generate_report
 from dataclasses import asdict, is_dataclass
+from rich import print
 
 # Configure logger
 logger.remove()  # Remove default handler
@@ -64,6 +65,9 @@ def run_mission(
     seed: int = typer.Option(
         42, "--seed", help="Random seed for reproducible parameter jittering"
     ),
+    generator: Optional[str] = typer.Option(
+        None, "--generator", help="Generator type: 'diffusion' for ML-based generation"
+    ),
     verbose: bool = typer.Option(
         False, "--verbose", "-v", help="Enable verbose output"
     ),
@@ -71,6 +75,7 @@ def run_mission(
     """Generate a CubeSat structure from a mission specification."""
     from .generator.basic_frame import build_basic_frame
     from .generator.multi_design import MultiDesignGenerator
+    from .generator.diffusion_workflow import DiffusionWorkflow
 
     # Set log level based on verbose flag
     if verbose:
@@ -105,8 +110,77 @@ def run_mission(
     # Create output directory
     outdir.mkdir(parents=True, exist_ok=True)
 
+    # Check if diffusion generator is requested
+    if generator == "diffusion":
+        console.print(f"Using diffusion generator for {multi} candidates...")
+
+        # Run diffusion workflow
+        workflow = DiffusionWorkflow(spec)
+        summary_file = workflow.run_complete_workflow(
+            outdir,
+            n_candidates=max(multi, 5),  # Minimum 5 for diffusion
+            run_fea=check,
+            run_dfam=dfam,
+        )
+
+        # Load and display results
+        with open(summary_file) as f:
+            summary_data = json.load(f)["results"]
+
+        # Display summary table
+        table = Table(
+            title=f"Diffusion-Generated Designs ({len(summary_data)} candidates)"
+        )
+        table.add_column("Design", style="cyan")
+        table.add_column("Mass (kg)", justify="right", style="green")
+        table.add_column("Max Stress (MPa)", justify="right", style="yellow")
+        table.add_column("Status", justify="center")
+        table.add_column("Files", justify="left")
+
+        for result in summary_data:
+            design = result["design"]
+            mass = f"{result['mass_kg']:.3f}" if "mass_kg" in result else "N/A"
+            stress = (
+                f"{result.get('max_stress_MPa', 0):.1f}"
+                if "max_stress_MPa" in result
+                else "N/A"
+            )
+            status = result.get("status", "UNKNOWN")
+            files = []
+            if result.get("step_file"):
+                files.append("STEP")
+            if result.get("stl_file"):
+                files.append("STL")
+            files_str = ", ".join(files)
+
+            status_style = {"PASS": "green", "FAIL": "red", "UNKNOWN": "yellow"}.get(
+                status, "white"
+            )
+
+            table.add_row(
+                design,
+                mass,
+                stress,
+                f"[{status_style}]{status}[/{status_style}]",
+                files_str,
+            )
+
+        console.print(table)
+        console.print(
+            f"\n✓ Generated {len(summary_data)} designs using diffusion model in [blue]{outdir}[/]"
+        )
+        console.print(f"Summary available at [blue]{summary_file}[/]")
+
+        # Check if any designs passed (for exit code)
+        passed_designs = [d for d in summary_data if d["status"] == "PASS"]
+        if check and not passed_designs:
+            console.print("[red]No designs passed validation[/]")
+            raise typer.Exit(1)
+
+        return
+
     # Check if multi-design generation is requested
-    if multi > 1:
+    elif multi > 1:
         console.print(f"Generating {multi} design variants...")
 
         # Run multi-design workflow
@@ -118,8 +192,6 @@ def run_mission(
             summary_data = json.load(f)
 
         # Display summary table
-        from rich.table import Table
-
         table = Table(title=f"Design Variants Summary ({len(summary_data)} designs)")
         table.add_column("Design")
         table.add_column("Mass (kg)")
