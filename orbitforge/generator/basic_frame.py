@@ -10,7 +10,9 @@ from OCC.Core.GProp import GProp_GProps
 from OCC.Core.BRepGProp import brepgprop
 from OCC.Core.StlAPI import StlAPI_Writer
 from OCC.Core.BRepBuilderAPI import BRepBuilderAPI_Transform
-from OCC.Core.Interface import Interface_Static_SetCVal
+
+# from OCC.Core.Interface import Interface_Static_SetCVal
+from OCC.Core.Interface import Interface_Static
 from .mission import MissionSpec
 from typing import List
 from OCC.Core.BRepMesh import BRepMesh_IncrementalMesh
@@ -118,7 +120,8 @@ def build_basic_frame(ms: MissionSpec, out_dir: Path) -> Path:
 
     # Export STEP file
     step_file = out_dir / "frame.step"
-    Interface_Static_SetCVal("write.step.schema", "AP203")
+    # Interface_Static_SetCVal("write.step.schema", "AP203")
+    Interface_Static.SetCVal("write.step.schema", "AP203")
     writer = STEPControl_Writer()
     writer.Transfer(frame, STEPControl_AsIs)
     status = writer.Write(str(step_file))
