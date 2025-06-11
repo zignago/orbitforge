@@ -67,8 +67,12 @@ def run_mission(
         )
 
     # Load and validate spec
-    with open(mission_json) as fp:
-        spec = MissionSpec.model_validate_json(fp.read())
+    try:
+        with open(mission_json) as fp:
+            spec = MissionSpec.model_validate_json(fp.read())
+    except Exception as e:
+        console.print(f"[red]Error:[/] {str(e)}")
+        raise typer.Exit(1)
 
     # Apply CLI overrides
     if rail is not None:
