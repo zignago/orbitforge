@@ -12,6 +12,9 @@ from .fast_check import (
     ValidationResults,
 )
 from .solver import compute_stresses, solve_static, assemble_system
+from .fe_uplift import FEAUpliftClient, FEAUpliftError
+from .preprocessor import convert_step_to_bdf, MeshGenerator, BDFWriter
+from .postprocessor import process_op2_results, OP2Parser, ReportGenerator
 
 __all__ = [
     "FastPhysicsValidator",
@@ -21,4 +24,12 @@ __all__ = [
     "compute_stresses",
     "solve_static",
     "assemble_system",
+    "FEAUpliftClient",
+    "FEAUpliftError",
+    "convert_step_to_bdf",
+    "MeshGenerator",
+    "BDFWriter",
+    "process_op2_results",
+    "OP2Parser",
+    "ReportGenerator",
 ]

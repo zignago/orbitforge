@@ -71,6 +71,9 @@ def run_mission(
     verbose: bool = typer.Option(
         False, "--verbose", "-v", help="Enable verbose output"
     ),
+    uplift: bool = typer.Option(
+        False, "--uplift", "-u", help="Run full-fidelity FEA on AWS Batch"
+    ),
 ):
     """Generate a CubeSat structure from a mission specification."""
     from .generator.basic_frame import build_basic_frame
@@ -364,6 +367,150 @@ def run_mission(
 
                 except Exception as e:
                     console.print(f"\n[red]Error during DfAM checks:[/] {str(e)}")
+                    if verbose:
+                        import traceback
+
+                        console.print("\nFull traceback:")
+                        console.print(traceback.format_exc())
+                    raise typer.Exit(1)
+
+            # Run full-fidelity FEA uplift if requested
+            if uplift:
+                console.print("\nRunning full-fidelity FEA uplift on AWS Batch...")
+                try:
+                    from .fea.fe_uplift import FEAUpliftClient
+                    from .fea.preprocessor import convert_step_to_bdf
+                    from .fea.postprocessor import process_op2_results
+                    import os
+
+                    # Check AWS credentials
+                    required_env_vars = [
+                        "AWS_BATCH_JOB_QUEUE",
+                        "AWS_BATCH_JOB_DEFINITION",
+                        "AWS_S3_BUCKET",
+                    ]
+                    missing_vars = [
+                        var for var in required_env_vars if not os.environ.get(var)
+                    ]
+                    if missing_vars:
+                        console.print(
+                            f"[red]Error:[/] Missing required environment variables: {', '.join(missing_vars)}"
+                        )
+                        console.print(
+                            "Please set AWS Batch configuration environment variables."
+                        )
+                        raise typer.Exit(1)
+
+                    # Prepare material properties
+                    material_props = {
+                        "elastic_modulus": spec.youngs_modulus_gpa
+                        * 1e9,  # Convert GPa to Pa
+                        "poisson_ratio": spec.poissons_ratio,
+                        "density": spec.density_kg_m3,
+                        "thickness": spec.rail_mm,  # Use rail thickness as shell thickness
+                    }
+
+                    # Prepare loads (basic gravity load)
+                    loads = {
+                        "accel_x": 0.0,
+                        "accel_y": 0.0,
+                        "accel_z": 9.81,  # 1g gravity
+                    }
+
+                    # Generate design ID
+                    design_id = f"design_{uuid.uuid4().hex[:8]}"
+
+                    # Convert STEP to BDF
+                    bdf_file = design_dir / "full_fea" / "frame.bdf"
+                    bdf_file.parent.mkdir(exist_ok=True)
+
+                    console.print("Converting STEP to Nastran BDF format...")
+                    convert_step_to_bdf(step_file, bdf_file, material_props, loads)
+
+                    # Initialize FEA uplift client
+                    client = FEAUpliftClient(
+                        job_queue=os.environ["AWS_BATCH_JOB_QUEUE"],
+                        job_definition=os.environ["AWS_BATCH_JOB_DEFINITION"],
+                        s3_bucket=os.environ["AWS_S3_BUCKET"],
+                    )
+
+                    # Submit job
+                    console.print("Submitting FEA job to AWS Batch...")
+                    job_id = client.submit_batch_job(design_id, bdf_file, design_dir)
+                    console.print(f"Job submitted with ID: {job_id}")
+
+                    # Poll for completion
+                    console.print("Waiting for job completion...")
+                    job_status = client.poll_batch_job(job_id)
+
+                    if job_status["jobStatus"] == "SUCCEEDED":
+                        console.print("[green]FEA job completed successfully![/]")
+
+                        # Download results
+                        console.print("Downloading results...")
+                        results_dir, job_metadata = client.download_results(
+                            design_id, design_dir, job_status
+                        )
+
+                        # Process OP2 results
+                        console.print("Processing analysis results...")
+                        op2_file = results_dir / "frame.op2"
+
+                        design_info = {
+                            "design_id": design_id,
+                            "material": spec.material.value,
+                            "rail_thickness_mm": spec.rail_mm,
+                            "deck_thickness_mm": spec.deck_mm,
+                        }
+
+                        fea_summary = process_op2_results(
+                            op2_file,
+                            results_dir,
+                            design_info,
+                            material_yield_strength=spec.yield_mpa,
+                        )
+
+                        # Update main summary with FEA results
+                        summary_file = design_dir / "summary.json"
+                        if summary_file.exists():
+                            with open(summary_file, "r") as f:
+                                summary = json.load(f)
+                        else:
+                            summary = {}
+
+                        summary.update(fea_summary)
+
+                        with open(summary_file, "w") as f:
+                            json.dump(summary, f, indent=2)
+
+                        # Print results
+                        console.print("\n[bold]Full FEA Results:[/]")
+                        console.print(
+                            f"Max Stress: {fea_summary['max_stress_fea']:.1f} MPa"
+                        )
+                        console.print(
+                            f"Safety Factor: {fea_summary['safety_factor']:.2f}"
+                        )
+                        console.print(
+                            f"Status: [{'green' if fea_summary['status_fea'] == 'PASS' else 'red'}]{fea_summary['status_fea']}[/]"
+                        )
+                        console.print(f"Results saved to [blue]{results_dir}[/]")
+
+                        # Exit with error if FEA failed
+                        if fea_summary["status_fea"] != "PASS":
+                            raise typer.Exit(1)
+
+                    else:
+                        console.print(
+                            f"[red]FEA job failed with status: {job_status['jobStatus']}[/]"
+                        )
+                        console.print(
+                            f"Reason: {job_status.get('statusReason', 'Unknown')}"
+                        )
+                        raise typer.Exit(1)
+
+                except Exception as e:
+                    console.print(f"\n[red]Error during FEA uplift:[/] {str(e)}")
                     if verbose:
                         import traceback
 

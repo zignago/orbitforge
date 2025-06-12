@@ -18,6 +18,7 @@ setup(
         "PyYAML>=6.0.0",
         "pythonocc-core>=7.7.0",
         "torch>=2.0.0",
+        "boto3>=1.26.0",
     ],
     extras_require={
         "dev": [
