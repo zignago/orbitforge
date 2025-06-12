@@ -74,6 +74,9 @@ def run_mission(
     uplift: bool = typer.Option(
         False, "--uplift", "-u", help="Run full-fidelity FEA on AWS Batch"
     ),
+    mock_batch: bool = typer.Option(
+        False, "--mock-batch", help="Use mock AWS Batch for testing"
+    ),
 ):
     """Generate a CubeSat structure from a mission specification."""
     from .generator.basic_frame import build_basic_frame
@@ -188,7 +191,9 @@ def run_mission(
 
         # Run multi-design workflow
         generator = MultiDesignGenerator(spec, multi, seed)
-        summary_file = generator.run_complete_workflow(outdir, run_fea=check)
+        summary_file = generator.run_complete_workflow(
+            outdir, run_fea=check, run_uplift=uplift, mock_batch=mock_batch
+        )
 
         # Load and display results
         with open(summary_file) as f:
@@ -203,13 +208,23 @@ def run_mission(
         table.add_column("Rail (mm)")
         table.add_column("Deck (mm)")
         table.add_column("Material")
+        table.add_column("FEA Mode", justify="center")
 
         for design in summary_data:
             mass_str = f"{design['mass_kg']:.3f}" if design["mass_kg"] else "N/A"
-            stress_str = (
-                f"{design['max_stress_MPa']:.1f}" if design["max_stress_MPa"] else "N/A"
-            )
-            status = design["status"] or "UNKNOWN"
+
+            # Handle stress value display
+            stress_fea = design.get("max_stress_fea")
+            stress_mpa = design.get("max_stress_MPa")
+
+            if stress_fea is not None:
+                stress_str = f"{stress_fea:.1f}"
+            elif stress_mpa is not None:
+                stress_str = f"{stress_mpa:.1f}"
+            else:
+                stress_str = "N/A"
+
+            status = design.get("status_fea") or design.get("status") or "UNKNOWN"
             status_color = (
                 "green"
                 if status == "PASS"
@@ -221,13 +236,14 @@ def run_mission(
             )
 
             table.add_row(
-                design["design"],
+                design["design_id"],
                 mass_str,
                 stress_str,
                 f"[{status_color}]{status}[/]",
                 f"{design['rail_mm']:.2f}",
                 f"{design['deck_mm']:.2f}",
                 design["material"],
+                f"[blue]{design.get('fea_mode', 'fast')}[/]",
             )
 
         console.print(table)
@@ -392,7 +408,7 @@ def run_mission(
                     missing_vars = [
                         var for var in required_env_vars if not os.environ.get(var)
                     ]
-                    if missing_vars:
+                    if missing_vars and not mock_batch:
                         console.print(
                             f"[red]Error:[/] Missing required environment variables: {', '.join(missing_vars)}"
                         )
@@ -427,29 +443,26 @@ def run_mission(
                     console.print("Converting STEP to Nastran BDF format...")
                     convert_step_to_bdf(step_file, bdf_file, material_props, loads)
 
-                    # Initialize FEA uplift client
-                    client = FEAUpliftClient(
-                        job_queue=os.environ["AWS_BATCH_JOB_QUEUE"],
-                        job_definition=os.environ["AWS_BATCH_JOB_DEFINITION"],
-                        s3_bucket=os.environ["AWS_S3_BUCKET"],
-                    )
-
                     # Submit job
-                    console.print("Submitting FEA job to AWS Batch...")
-                    job_id = client.submit_batch_job(design_id, bdf_file, design_dir)
+                    console.print("Submitting FEA job...")
+                    if mock_batch:
+                        console.print("[yellow]Using mock AWS Batch for testing[/]")
+                    job_id = submit_batch_job(
+                        design_id, bdf_file, design_dir, mock=mock_batch
+                    )
                     console.print(f"Job submitted with ID: {job_id}")
 
                     # Poll for completion
                     console.print("Waiting for job completion...")
-                    job_status = client.poll_batch_job(job_id)
+                    job_status = poll_batch_job(job_id, mock=mock_batch)
 
                     if job_status["jobStatus"] == "SUCCEEDED":
                         console.print("[green]FEA job completed successfully![/]")
 
                         # Download results
                         console.print("Downloading results...")
-                        results_dir, job_metadata = client.download_results(
-                            design_id, design_dir, job_status
+                        results_dir, job_metadata = download_results(
+                            design_id, design_dir, job_status, mock=mock_batch
                         )
 
                         # Process OP2 results

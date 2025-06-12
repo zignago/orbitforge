@@ -34,6 +34,10 @@ class DesignVariant:
     max_stress_mpa: Optional[float] = None
     status: Optional[str] = None
     step_file: Optional[Path] = None
+    fea_mode: Optional[str] = None
+    status_fea: Optional[str] = None
+    max_stress_fea: Optional[float] = None
+    safety_factor: Optional[float] = None
     _timestamp: Optional[float] = None  # Added for cache expiry
 
     def to_dict(self) -> Dict:
@@ -535,6 +539,10 @@ class MultiDesignGenerator:
                             if variant_dict.get("step_file")
                             else None
                         ),
+                        fea_mode=variant_dict.get("fea_mode"),
+                        status_fea=variant_dict.get("status_fea"),
+                        max_stress_fea=variant_dict.get("max_stress_fea"),
+                        safety_factor=variant_dict.get("safety_factor"),
                     )
                     validated_variants.append(variant)
                 except Exception as e:
@@ -575,40 +583,31 @@ class MultiDesignGenerator:
         return ranked
 
     def generate_summary(self, variants: List[DesignVariant], output_dir: Path) -> Path:
-        """Generate detailed summary with validation metrics."""
-        from .mission import load_materials
-
-        # Load materials data once
-        materials_data = load_materials()
+        """Generate a summary JSON file of all variants."""
         summary_data = []
-
         for variant in variants:
-            # Calculate additional metrics
-            mass_margin = None
-            safety_factor = None
+            variant_dict = variant.to_dict()
 
-            if variant.mass_kg is not None and self.base_spec.mass_limit_kg > 0:
-                mass_margin = 1 - (variant.mass_kg / self.base_spec.mass_limit_kg)
+            # Calculate mass margin
+            mass_margin = 1.0
+            if variant.mass_kg and self.base_spec.mass_limit_kg:
+                mass_margin = 1.0 - (variant.mass_kg / self.base_spec.mass_limit_kg)
+            variant_dict["mass_margin"] = mass_margin
 
-            if variant.max_stress_mpa is not None and variant.material:
-                yield_stress = materials_data[variant.material]["yield_mpa"]
-                safety_factor = yield_stress / variant.max_stress_mpa
+            # Add FEA results if available
+            if variant.fea_mode == "full":
+                variant_dict["fea_mode"] = "full"
+                variant_dict["max_stress_fea"] = variant.max_stress_fea
+                variant_dict["status_fea"] = variant.status_fea
+                variant_dict["safety_factor"] = variant.safety_factor
+            elif variant.fea_mode == "fast":
+                variant_dict["fea_mode"] = "fast"
+                variant_dict["max_stress_MPa"] = variant.max_stress_mpa
+                variant_dict["status_fea"] = variant.status_fea
 
-            summary_data.append(
-                {
-                    "design": variant.design_id,
-                    "rail_mm": variant.rail_mm,
-                    "deck_mm": variant.deck_mm,
-                    "material": variant.material.value,
-                    "mass_kg": variant.mass_kg,
-                    "mass_margin": mass_margin,
-                    "max_stress_MPa": variant.max_stress_mpa,
-                    "safety_factor": safety_factor,
-                    "status": variant.status or "UNKNOWN",
-                    "step_file": str(variant.step_file) if variant.step_file else None,
-                }
-            )
+            summary_data.append(variant_dict)
 
+        # Write summary file
         summary_file = output_dir / "summary.json"
         with open(summary_file, "w") as f:
             json.dump(summary_data, f, indent=2)
@@ -616,7 +615,13 @@ class MultiDesignGenerator:
         logger.info(f"Generated summary at {summary_file}")
         return summary_file
 
-    def run_complete_workflow(self, output_dir: Path, run_fea: bool = True) -> Path:
+    def run_complete_workflow(
+        self,
+        output_dir: Path,
+        run_fea: bool = True,
+        run_uplift: bool = False,
+        mock_batch: bool = False,
+    ) -> Path:
         """Run the complete multi-design workflow with parallel processing."""
         logger.info("Starting multi-design generation workflow...")
 
@@ -629,7 +634,101 @@ class MultiDesignGenerator:
 
             # Run FEA if requested (using processes)
             if run_fea:
-                variants = self.run_batch_fea(variants)
+                if run_uplift:
+                    # Run full-fidelity FEA uplift
+                    from ..fea.fe_uplift import (
+                        submit_batch_job,
+                        poll_batch_job,
+                        download_results,
+                    )
+                    from ..fea.preprocessor import convert_step_to_bdf
+                    from ..fea.postprocessor import process_op2_results
+
+                    for variant in variants:
+                        if variant.step_file and variant.status != "BUILD_FAILED":
+                            # Set FEA mode at the start
+                            variant.fea_mode = "full"
+
+                            design_dir = variant.step_file.parent
+                            design_id = variant.design_id
+
+                            # Prepare material properties
+                            material_props = {
+                                "elastic_modulus": self.base_spec.youngs_modulus_gpa
+                                * 1e9,
+                                "poisson_ratio": self.base_spec.poissons_ratio,
+                                "density": self.base_spec.density_kg_m3,
+                                "thickness": variant.rail_mm,
+                            }
+
+                            # Prepare loads
+                            loads = {
+                                "accel_x": 0.0,
+                                "accel_y": 0.0,
+                                "accel_z": 9.81,
+                            }
+
+                            # Convert STEP to BDF
+                            bdf_file = design_dir / "full_fea" / "frame.bdf"
+                            bdf_file.parent.mkdir(exist_ok=True)
+
+                            logger.info(f"Converting STEP to BDF for {design_id}...")
+                            convert_step_to_bdf(
+                                variant.step_file, bdf_file, material_props, loads
+                            )
+
+                            # Submit job
+                            logger.info(f"Submitting FEA job for {design_id}...")
+                            job_id = submit_batch_job(
+                                design_id, bdf_file, design_dir, mock=mock_batch
+                            )
+
+                            # Poll for completion
+                            logger.info(f"Waiting for job {job_id} completion...")
+                            job_status = poll_batch_job(job_id, mock=mock_batch)
+
+                            if job_status["jobStatus"] == "SUCCEEDED":
+                                logger.info(f"FEA job completed for {design_id}")
+
+                                # Download results
+                                results_dir, job_metadata = download_results(
+                                    design_id, design_dir, job_status, mock=mock_batch
+                                )
+
+                                # Process OP2 results
+                                op2_file = results_dir / "frame.op2"
+                                design_info = {
+                                    "design_id": design_id,
+                                    "material": variant.material.value,
+                                    "rail_thickness_mm": variant.rail_mm,
+                                    "deck_thickness_mm": variant.deck_mm,
+                                }
+
+                                fea_summary = process_op2_results(
+                                    op2_file,
+                                    results_dir,
+                                    design_info,
+                                    material_yield_strength=self.base_spec.yield_mpa,
+                                )
+
+                                # Update variant with FEA results
+                                variant.max_stress_mpa = fea_summary["max_stress_fea"]
+                                variant.status = fea_summary["status_fea"]
+                                variant.status_fea = fea_summary["status_fea"]
+                                variant.max_stress_fea = fea_summary["max_stress_fea"]
+                                variant.safety_factor = fea_summary["safety_factor"]
+                            else:
+                                logger.error(f"FEA job failed for {design_id}")
+                                variant.status = "FEA_FAILED"
+                                variant.status_fea = "FAILED"
+                else:
+                    # Run fast physics validation
+                    variants = self.run_batch_fea(variants)
+                    # Update FEA mode for fast validation
+                    for variant in variants:
+                        variant.fea_mode = "fast"
+                        variant.status_fea = variant.status
+                        variant.max_stress_fea = variant.max_stress_mpa
 
             # Rank designs
             variants = self.rank_designs(variants)

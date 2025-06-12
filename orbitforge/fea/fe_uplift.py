@@ -8,6 +8,7 @@ import json
 import os
 import time
 import uuid
+import shutil
 from pathlib import Path
 from typing import Dict, Optional, Tuple, Any
 
@@ -20,6 +21,96 @@ class FEAUpliftError(Exception):
     """Base exception for FEA uplift operations."""
 
     pass
+
+
+class MockFEAUpliftClient:
+    """Mock client for testing AWS Batch FEA jobs."""
+
+    def __init__(
+        self,
+        job_queue: str,
+        job_definition: str,
+        s3_bucket: str,
+        max_retries: int = 3,
+        aws_region: str = "us-east-1",
+    ):
+        """Initialize the mock FEA uplift client."""
+        self.job_queue = job_queue
+        self.job_definition = job_definition
+        self.s3_bucket = s3_bucket
+        self.max_retries = max_retries
+        self.mock_jobs = {}
+
+    def submit_batch_job(self, design_id: str, bdf_file: Path, design_dir: Path) -> str:
+        """Mock submitting a batch job."""
+        job_id = f"mock-job-{uuid.uuid4().hex[:8]}"
+        job_name = f"fea_{design_id}_{uuid.uuid4().hex[:8]}"
+
+        # Store job info
+        self.mock_jobs[job_id] = {
+            "jobId": job_id,
+            "jobName": job_name,
+            "jobStatus": "SUBMITTED",
+            "createdAt": int(time.time()),
+            "design_id": design_id,
+            "bdf_file": bdf_file,
+            "design_dir": design_dir,
+        }
+
+        logger.info(f"Submitted mock FEA job {job_name} with ID: {job_id}")
+        return job_id
+
+    def poll_batch_job(self, job_id: str, poll_interval: int = 1) -> Dict[str, Any]:
+        """Mock polling a batch job."""
+        if job_id not in self.mock_jobs:
+            raise FEAUpliftError(f"Mock job {job_id} not found")
+
+        job = self.mock_jobs[job_id]
+
+        # Simulate job progression
+        if job["jobStatus"] == "SUBMITTED":
+            job["jobStatus"] = "RUNNING"
+            job["startedAt"] = int(time.time())
+        elif job["jobStatus"] == "RUNNING":
+            job["jobStatus"] = "SUCCEEDED"
+            job["stoppedAt"] = int(time.time())
+
+            # Create mock results
+            design_dir = job["design_dir"]
+            results_dir = design_dir / "full_fea"
+            results_dir.mkdir(exist_ok=True)
+
+            # Copy input BDF to results dir
+            shutil.copy2(job["bdf_file"], results_dir / "frame.bdf")
+
+            # Create dummy OP2 file
+            op2_file = results_dir / "frame.op2"
+            op2_file.write_bytes(b"MOCK NASTRAN OUTPUT" * 100)
+
+        return job
+
+    def download_results(
+        self, design_id: str, design_dir: Path, job_status: Dict[str, Any]
+    ) -> Tuple[Path, Dict[str, Any]]:
+        """Mock downloading results."""
+        results_dir = design_dir / "full_fea"
+
+        # Results should already be in place from poll_batch_job
+        if not (results_dir / "frame.op2").exists():
+            raise FEAUpliftError("Mock results not found")
+
+        job_metadata = {
+            "job_id": job_status["jobId"],
+            "job_name": job_status["jobName"],
+            "status": job_status["jobStatus"],
+            "created_at": job_status.get("createdAt", 0),
+            "started_at": job_status.get("startedAt", 0),
+            "stopped_at": job_status.get("stoppedAt", 0),
+            "exit_code": 0,
+            "reason": "Mock job completed successfully",
+        }
+
+        return results_dir, job_metadata
 
 
 class FEAUpliftClient:
@@ -220,33 +311,33 @@ class FEAUpliftClient:
                 raise FEAUpliftError(f"Failed to download {s3_key}: {e}") from e
 
 
-def submit_batch_job(design_id: str, bdf_file: Path, design_dir: Path) -> str:
-    """Convenience function to submit a batch job."""
-    client = FEAUpliftClient(
+def get_client(mock: bool = False) -> FEAUpliftClient:
+    """Get a FEA uplift client instance."""
+    client_class = MockFEAUpliftClient if mock else FEAUpliftClient
+    return client_class(
         job_queue=os.environ.get("AWS_BATCH_JOB_QUEUE", "orbitforge-fea-queue"),
         job_definition=os.environ.get("AWS_BATCH_JOB_DEFINITION", "orbitforge-fea-job"),
         s3_bucket=os.environ.get("AWS_S3_BUCKET", "orbitforge-fea-bucket"),
     )
+
+
+def submit_batch_job(
+    design_id: str, bdf_file: Path, design_dir: Path, mock: bool = False
+) -> str:
+    """Convenience function to submit a batch job."""
+    client = get_client(mock)
     return client.submit_batch_job(design_id, bdf_file, design_dir)
 
 
-def poll_batch_job(job_id: str) -> Dict[str, Any]:
+def poll_batch_job(job_id: str, mock: bool = False) -> Dict[str, Any]:
     """Convenience function to poll a batch job."""
-    client = FEAUpliftClient(
-        job_queue=os.environ.get("AWS_BATCH_JOB_QUEUE", "orbitforge-fea-queue"),
-        job_definition=os.environ.get("AWS_BATCH_JOB_DEFINITION", "orbitforge-fea-job"),
-        s3_bucket=os.environ.get("AWS_S3_BUCKET", "orbitforge-fea-bucket"),
-    )
+    client = get_client(mock)
     return client.poll_batch_job(job_id)
 
 
 def download_results(
-    design_id: str, design_dir: Path, job_status: Dict[str, Any]
+    design_id: str, design_dir: Path, job_status: Dict[str, Any], mock: bool = False
 ) -> Tuple[Path, Dict[str, Any]]:
     """Convenience function to download results."""
-    client = FEAUpliftClient(
-        job_queue=os.environ.get("AWS_BATCH_JOB_QUEUE", "orbitforge-fea-queue"),
-        job_definition=os.environ.get("AWS_BATCH_JOB_DEFINITION", "orbitforge-fea-job"),
-        s3_bucket=os.environ.get("AWS_S3_BUCKET", "orbitforge-fea-bucket"),
-    )
+    client = get_client(mock)
     return client.download_results(design_id, design_dir, job_status)
