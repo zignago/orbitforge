@@ -17,136 +17,210 @@ def compute_element_stiffness(
     nodes: np.ndarray, young: float, poisson: float
 ) -> np.ndarray:
     """
-    Compute the stiffness matrix for a linear tetrahedral element.
-
-    Args:
-        nodes: 4x3 array of node coordinates
-        young: Young's modulus
-        poisson: Poisson's ratio
-
-    Returns:
-        12x12 element stiffness matrix
+    Compute the stiffness matrix for a linear tetrahedral element (12x12).
+    Uses shape function gradient formulation.
     """
-    # Calculate element volume and shape function derivatives
-    # For a tetrahedral element, the Jacobian is the matrix of node differences
-    # J = [x2-x1  y2-y1  z2-z1]
-    #     [x3-x1  y3-y1  z3-z1]
-    #     [x4-x1  y4-y1  z4-z1]
-    J = nodes[1:] - nodes[0]  # This gives us a 3x3 matrix
-    volume = abs(np.linalg.det(J)) / 6.0
+    # Construct matrix for shape function coefficients
+    X = np.ones((4, 4))
+    X[:, 1:] = nodes
+    detJ = np.linalg.det(X)
 
-    # B matrix (strain-displacement)
-    B = np.linalg.inv(J).T
-    B_matrix = np.zeros((6, 12))
+    volume = abs(detJ) / 6.0
+    if volume < 1e-12:
+        raise ValueError("Degenerate tetrahedral element with near-zero volume")
 
-    # Fill B matrix for each node
+    # Shape function gradients (b, c, d coefficients)
+    C = np.linalg.inv(X)
+
+    grads = C[1:, :]  # Each column is the gradient of one shape function
+
+    # Construct B matrix
+    B = np.zeros((6, 12))
     for i in range(4):
-        B_matrix[0, 3 * i] = B[0, 0]
-        B_matrix[1, 3 * i + 1] = B[1, 1]
-        B_matrix[2, 3 * i + 2] = B[2, 2]
-        B_matrix[3, 3 * i : 3 * i + 2] = [B[1, 0], B[0, 1]]
-        B_matrix[4, 3 * i + 1 : 3 * i + 3] = [B[2, 1], B[1, 2]]
-        B_matrix[5, [3 * i, 3 * i + 2]] = [B[2, 0], B[0, 2]]
+        bi, ci, di = grads[0, i], grads[1, i], grads[2, i]
+        B[:, 3 * i : 3 * i + 3] = [
+            [bi, 0, 0],
+            [0, ci, 0],
+            [0, 0, di],
+            [ci, bi, 0],
+            [0, di, ci],
+            [di, 0, bi],
+        ]
 
-    # D matrix (constitutive)
-    factor = young / ((1 + poisson) * (1 - 2 * poisson))
+    # Constitutive matrix D (isotropic)
+    E = young
+    nu = poisson
+    factor = E / ((1 + nu) * (1 - 2 * nu))
     D = factor * np.array(
         [
-            [1 - poisson, poisson, poisson, 0, 0, 0],
-            [poisson, 1 - poisson, poisson, 0, 0, 0],
-            [poisson, poisson, 1 - poisson, 0, 0, 0],
-            [0, 0, 0, (1 - 2 * poisson) / 2, 0, 0],
-            [0, 0, 0, 0, (1 - 2 * poisson) / 2, 0],
-            [0, 0, 0, 0, 0, (1 - 2 * poisson) / 2],
+            [1 - nu, nu, nu, 0, 0, 0],
+            [nu, 1 - nu, nu, 0, 0, 0],
+            [nu, nu, 1 - nu, 0, 0, 0],
+            [0, 0, 0, (1 - 2 * nu) / 2, 0, 0],
+            [0, 0, 0, 0, (1 - 2 * nu) / 2, 0],
+            [0, 0, 0, 0, 0, (1 - 2 * nu) / 2],
         ]
     )
 
-    return volume * B_matrix.T @ D @ B_matrix
+    return volume * B.T @ D @ B
 
 
 def assemble_system(
     nodes: np.ndarray, elements: np.ndarray, material: Dict
 ) -> Tuple[csc_matrix, int]:
     """
-    Assemble the global stiffness matrix.
+    Assemble global stiffness matrix for linear elastic analysis.
 
     Args:
         nodes: Nx3 array of node coordinates
-        elements: Ex4 array of element connectivity
-        material: Dictionary containing material properties
+        elements: Ex4 array of element connectivity (4-node tets)
+        material: Dictionary of material properties
 
     Returns:
-        Tuple of (sparse stiffness matrix, number of DOFs)
+        K: Global stiffness matrix (sparse)
+        ndof: Number of degrees of freedom
     """
     n_nodes = len(nodes)
-    n_elements = len(elements)
-    ndof = 3 * n_nodes
+    ndof = 3 * n_nodes  # 3 DOFs per node
 
-    # Pre-allocate COO matrix arrays
-    n_entries = 144 * n_elements  # 12x12 element matrix
-    rows = np.zeros(n_entries, dtype=np.int32)
-    cols = np.zeros(n_entries, dtype=np.int32)
-    data = np.zeros(n_entries)
+    # Material properties
+    E = material["youngs_modulus_gpa"] * 1e9  # Convert GPa to Pa
+    nu = material["poissons_ratio"]
 
-    idx = 0
-    for el in range(n_elements):
-        el_nodes = elements[el]
-        node_coords = nodes[el_nodes]
+    # Elastic constants
+    lambda_ = E * nu / ((1 + nu) * (1 - 2 * nu))
+    mu = E / (2 * (1 + nu))
 
-        # Compute element stiffness
-        K_el = compute_element_stiffness(
-            node_coords,
-            material["youngs_modulus_gpa"] * 1e9,  # Convert to Pa
-            material["poissons_ratio"],
-        )
+    # Constitutive matrix
+    C = np.array(
+        [
+            [lambda_ + 2 * mu, lambda_, lambda_, 0, 0, 0],
+            [lambda_, lambda_ + 2 * mu, lambda_, 0, 0, 0],
+            [lambda_, lambda_, lambda_ + 2 * mu, 0, 0, 0],
+            [0, 0, 0, mu, 0, 0],
+            [0, 0, 0, 0, mu, 0],
+            [0, 0, 0, 0, 0, mu],
+        ]
+    )
 
-        # Get DOF indices for this element
-        dofs = np.array([[3 * n, 3 * n + 1, 3 * n + 2] for n in el_nodes]).flatten()
+    # Initialize COO matrix entries
+    i_list = []
+    j_list = []
+    v_list = []
 
-        # Add to COO arrays
-        for i in range(12):
-            for j in range(12):
-                rows[idx] = dofs[i]
-                cols[idx] = dofs[j]
-                data[idx] = K_el[i, j]
-                idx += 1
+    # Assemble element matrices
+    for el in elements:
+        el_nodes = nodes[el]
+
+        try:
+            B, vol = compute_B_matrix(el_nodes)
+            Ke = vol * B.T @ C @ B
+
+            # Add to global matrix
+            for i in range(4):
+                for j in range(4):
+                    for d1 in range(3):
+                        for d2 in range(3):
+                            i_list.append(3 * el[i] + d1)
+                            j_list.append(3 * el[j] + d2)
+                            v_list.append(Ke[3 * i + d1, 3 * j + d2])
+
+        except ValueError as e:
+            logger.warning(f"Skipping degenerate element: {str(e)}")
+            continue
 
     # Create sparse matrix
-    K = coo_matrix((data, (rows, cols)), shape=(ndof, ndof)).tocsc()
+    K = coo_matrix((v_list, (i_list, j_list)), shape=(ndof, ndof)).tocsc()
+
     return K, ndof
 
 
 def solve_static(
-    K: csc_matrix, ndof: int, load_vector: np.ndarray, fixed_dofs: List[int]
+    K: csc_matrix, ndof: int, f: np.ndarray, fixed_dofs: List[int]
 ) -> np.ndarray:
     """
-    Solve the static problem Ku = f with constraints.
+    Solve static equilibrium Ku = f with fixed DOFs.
 
     Args:
         K: Global stiffness matrix
         ndof: Number of degrees of freedom
-        load_vector: Global force vector
-        fixed_dofs: List of constrained DOFs
+        f: Force vector
+        fixed_dofs: List of fixed DOF indices
 
     Returns:
-        Displacement vector
+        u: Displacement vector
     """
-    # Remove constrained DOFs
-    free_dofs = list(set(range(ndof)) - set(fixed_dofs))
-    K_free = K[free_dofs, :][:, free_dofs]
-    f_free = load_vector[free_dofs]
+    # Get free DOFs
+    all_dofs = np.arange(ndof)
+    free_dofs = np.setdiff1d(all_dofs, fixed_dofs)
 
-    # Solve system
-    u_free = spsolve(K_free, f_free)
+    # Extract system for free DOFs
+    K_free = K[free_dofs][:, free_dofs]
+    f_free = f[free_dofs]
 
-    # Reconstruct full solution
-    u = np.zeros(ndof)
-    u[free_dofs] = u_free
-    return u
+    # Add small value to diagonal for stability
+    eps = 1e-10 * K_free.diagonal().mean()
+    K_free.setdiag(K_free.diagonal() + eps)
+
+    try:
+        # Solve system
+        u_free = spsolve(K_free, f_free)
+
+        # Check for NaN values
+        if np.any(np.isnan(u_free)):
+            logger.error("NaN values in solution - system may be ill-conditioned")
+            raise ValueError("Solver produced NaN values")
+
+        # Reconstruct full solution
+        u = np.zeros(ndof)
+        u[free_dofs] = u_free
+
+        return u
+
+    except Exception as e:
+        logger.error(f"Solver failed: {str(e)}")
+        raise RuntimeError("Failed to solve system") from e
+
+
+def compute_B_matrix(nodes: np.ndarray) -> Tuple[np.ndarray, float]:
+    """
+    Compute the strain-displacement (B) matrix and volume for a tetrahedral element.
+    """
+    X = np.ones((4, 4))
+    X[:, 1:] = nodes
+
+    try:
+        detJ = np.linalg.det(X)
+        volume = abs(detJ) / 6.0
+
+        # Check for degenerate elements
+        if volume < 1e-12:  # Increased threshold for better stability
+            raise ValueError(f"Degenerate element detected (volume: {volume:.2e})")
+
+        # Use more stable matrix inversion
+        C = np.linalg.solve(X, np.eye(4))  # Instead of direct inverse
+        grads = C[1:, :]  # Gradient of shape functions
+
+        B = np.zeros((6, 12))
+        for i in range(4):
+            bi, ci, di = grads[0, i], grads[1, i], grads[2, i]
+            B[:, 3 * i : 3 * i + 3] = [
+                [bi, 0, 0],
+                [0, ci, 0],
+                [0, 0, di],
+                [ci, bi, 0],
+                [0, di, ci],
+                [di, 0, bi],
+            ]
+
+        return B, volume
+
+    except np.linalg.LinAlgError as e:
+        raise ValueError(f"Failed to compute B matrix: {str(e)}")
 
 
 def compute_stresses(
-    nodes: np.ndarray, elements: np.ndarray, displacements: np.ndarray, material: Dict
+    nodes: np.ndarray, elements: np.ndarray, u: np.ndarray, material: Dict
 ) -> np.ndarray:
     """
     Compute von Mises stresses for each element.
@@ -154,84 +228,64 @@ def compute_stresses(
     Args:
         nodes: Node coordinates
         elements: Element connectivity
-        displacements: Nodal displacement vector
+        u: Displacement vector
         material: Material properties
 
     Returns:
-        Array of von Mises stresses for each element in Pa
+        von_mises: Array of von Mises stresses per element
     """
-    try:
-        n_elements = len(elements)
-        von_mises = np.zeros(n_elements)
+    # Material properties
+    E = material["youngs_modulus_gpa"] * 1e9
+    nu = material["poissons_ratio"]
 
-        young = material["youngs_modulus_gpa"] * 1e9  # Convert to Pa
-        poisson = material["poissons_ratio"]
+    # Elastic constants
+    lambda_ = E * nu / ((1 + nu) * (1 - 2 * nu))
+    mu = E / (2 * (1 + nu))
 
-        # D matrix (constitutive)
-        factor = young / ((1 + poisson) * (1 - 2 * poisson))
-        D = factor * np.array(
-            [
-                [1 - poisson, poisson, poisson, 0, 0, 0],
-                [poisson, 1 - poisson, poisson, 0, 0, 0],
-                [poisson, poisson, 1 - poisson, 0, 0, 0],
-                [0, 0, 0, (1 - 2 * poisson) / 2, 0, 0],
-                [0, 0, 0, 0, (1 - 2 * poisson) / 2, 0],
-                [0, 0, 0, 0, 0, (1 - 2 * poisson) / 2],
-            ]
-        )
+    # Constitutive matrix
+    C = np.array(
+        [
+            [lambda_ + 2 * mu, lambda_, lambda_, 0, 0, 0],
+            [lambda_, lambda_ + 2 * mu, lambda_, 0, 0, 0],
+            [lambda_, lambda_, lambda_ + 2 * mu, 0, 0, 0],
+            [0, 0, 0, mu, 0, 0],
+            [0, 0, 0, 0, mu, 0],
+            [0, 0, 0, 0, 0, mu],
+        ]
+    )
 
-        logger.debug(f"Processing {n_elements} elements")
-        logger.debug(f"Element array type: {elements.dtype}")
-        logger.debug(f"Node array type: {nodes.dtype}")
-        logger.debug(f"Displacement array type: {displacements.dtype}")
+    von_mises = np.zeros(len(elements))
 
-        for el in range(n_elements):
-            try:
-                el_nodes = elements[el]
-                node_coords = nodes[el_nodes]
-                # Convert indices to integers and flatten
-                node_indices = np.array(
-                    [[3 * int(n), 3 * int(n) + 1, 3 * int(n) + 2] for n in el_nodes],
-                    dtype=np.int64,
-                ).flatten()
-                el_disps = displacements[node_indices]
+    for i, el in enumerate(elements):
+        try:
+            # Get element displacements
+            el_nodes = nodes[el]
+            ue = np.zeros(12)  # 3 DOFs per node
+            for j in range(4):
+                ue[3 * j : 3 * j + 3] = u[3 * el[j] : 3 * el[j] + 3]
 
-                # Calculate B matrix
-                J = node_coords[1:] - node_coords[0]  # 3x3 Jacobian matrix
-                B = np.linalg.inv(J).T
-                B_matrix = np.zeros((6, 12))
+            # Compute B matrix
+            B, _ = compute_B_matrix(el_nodes)
 
-                for i in range(4):
-                    B_matrix[0, 3 * i] = B[0, 0]
-                    B_matrix[1, 3 * i + 1] = B[1, 1]
-                    B_matrix[2, 3 * i + 2] = B[2, 2]
-                    B_matrix[3, 3 * i : 3 * i + 2] = [B[1, 0], B[0, 1]]
-                    B_matrix[4, 3 * i + 1 : 3 * i + 3] = [B[2, 1], B[1, 2]]
-                    B_matrix[5, [3 * i, 3 * i + 2]] = [B[2, 0], B[0, 2]]
+            # Compute strains and stresses
+            strain = B @ ue
+            stress = C @ strain
 
-                # Calculate stresses
-                stress = D @ B_matrix @ el_disps
-
-                # Calculate von Mises stress
-                s11, s22, s33, s12, s23, s31 = stress
-                von_mises[el] = np.sqrt(
-                    0.5
-                    * (
-                        (s11 - s22) ** 2
-                        + (s22 - s33) ** 2
-                        + (s33 - s11) ** 2
-                        + 6 * (s12**2 + s23**2 + s31**2)
-                    )
+            # Compute von Mises stress
+            s11, s22, s33, s12, s23, s31 = stress
+            von_mises[i] = np.sqrt(
+                0.5
+                * (
+                    (s11 - s22) ** 2
+                    + (s22 - s33) ** 2
+                    + (s33 - s11) ** 2
+                    + 6 * (s12**2 + s23**2 + s31**2)
                 )
+            )
 
-            except Exception as e:
-                logger.error(f"Error processing element {el}: {str(e)}")
-                logger.error(f"Element nodes: {el_nodes}")
-                logger.error(f"Node coordinates shape: {node_coords.shape}")
-                raise
+        except ValueError as e:
+            logger.warning(f"Skipping stress calculation for element {i}: {str(e)}")
+            von_mises[i] = 0.0
+            continue
 
-        return von_mises  # Return in Pa
-
-    except Exception as e:
-        logger.error(f"Error in compute_stresses: {str(e)}")
-        raise
+    return von_mises

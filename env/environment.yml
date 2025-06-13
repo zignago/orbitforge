@@ -1,10 +1,10 @@
-name: base
+name: orbitforge
 channels:
   - conda-forge
 dependencies:
   - python=3.12
-  - conda[version='>=25.3.0']
-  - mamba[version='>=2.1.1']
+  - conda >=25.3.0
+  - mamba >=2.1.1
   - pip
   - pydantic
   - pytorch
@@ -21,4 +21,5 @@ dependencies:
   - hydra-core
   - dvc
   - dvc-s3
-prefix: /home/gzignago/miniforge3
+  - pip:
+      - reportlab

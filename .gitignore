@@ -6,9 +6,7 @@ outputs/
 my_outputs/
 *.egg-info/
 *.py[cod]
-.env/
-.envrc
-.env/
+.env*
 .cache/
 .dvc/cache/
 .dvc/tmp/
