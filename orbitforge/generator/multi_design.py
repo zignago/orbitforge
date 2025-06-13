@@ -19,6 +19,7 @@ from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_compl
 from .mission import MissionSpec, Material, load_materials
 from .basic_frame import build_basic_frame
 from ..fea import FastPhysicsValidator, MaterialProperties
+from ..dfam import DfamPostProcessor
 from ..config.design_config import config
 
 
@@ -34,6 +35,9 @@ class DesignVariant:
     max_stress_mpa: Optional[float] = None
     status: Optional[str] = None
     step_file: Optional[Path] = None
+    dfam_status: Optional[str] = None  # Added for DfAM v0.1.5
+    dfam_error_count: Optional[int] = None
+    dfam_warning_count: Optional[int] = None
     _timestamp: Optional[float] = None  # Added for cache expiry
 
     def to_dict(self) -> Dict:
@@ -545,6 +549,45 @@ class MultiDesignGenerator:
         finally:
             self._cleanup_executors()
 
+    def run_batch_dfam(
+        self, variants: List[DesignVariant], output_dir: Path
+    ) -> List[DesignVariant]:
+        """Run DfAM post-processing on all variants."""
+        logger.info("Running batch DfAM post-processing...")
+
+        processor = DfamPostProcessor()
+
+        for variant in variants:
+            if variant.step_file and variant.step_file.parent.exists():
+                design_dir = variant.step_file.parent
+
+                try:
+                    dfam_result = processor.process_design(
+                        design_dir, variant.step_file, base_name="frame"
+                    )
+
+                    # Update variant with DfAM results
+                    variant.dfam_status = dfam_result["dfam_status"]
+                    variant.dfam_error_count = dfam_result.get("error_count", 0)
+                    variant.dfam_warning_count = dfam_result.get("warning_count", 0)
+
+                    logger.info(
+                        f"DfAM processed {variant.design_id}: {variant.dfam_status}"
+                    )
+
+                except Exception as e:
+                    logger.error(f"DfAM processing failed for {variant.design_id}: {e}")
+                    variant.dfam_status = "ERROR"
+                    variant.dfam_error_count = 1
+                    variant.dfam_warning_count = 0
+            else:
+                logger.warning(f"No STEP file for DfAM processing: {variant.design_id}")
+                variant.dfam_status = "NOT_RUN"
+                variant.dfam_error_count = 0
+                variant.dfam_warning_count = 0
+
+        return variants
+
     def rank_designs(self, variants: List[DesignVariant]) -> List[DesignVariant]:
         """Rank designs by multiple criteria."""
         from .mission import load_materials
@@ -606,6 +649,9 @@ class MultiDesignGenerator:
                     "safety_factor": safety_factor,
                     "status": variant.status or "UNKNOWN",
                     "step_file": str(variant.step_file) if variant.step_file else None,
+                    "dfam_status": variant.dfam_status or "NOT_RUN",
+                    "dfam_error_count": variant.dfam_error_count or 0,
+                    "dfam_warning_count": variant.dfam_warning_count or 0,
                 }
             )
 
@@ -616,7 +662,9 @@ class MultiDesignGenerator:
         logger.info(f"Generated summary at {summary_file}")
         return summary_file
 
-    def run_complete_workflow(self, output_dir: Path, run_fea: bool = True) -> Path:
+    def run_complete_workflow(
+        self, output_dir: Path, run_fea: bool = True, run_dfam: bool = False
+    ) -> Path:
         """Run the complete multi-design workflow with parallel processing."""
         logger.info("Starting multi-design generation workflow...")
 
@@ -630,6 +678,10 @@ class MultiDesignGenerator:
             # Run FEA if requested (using processes)
             if run_fea:
                 variants = self.run_batch_fea(variants)
+
+            # Run DfAM post-processing if requested
+            if run_dfam:
+                variants = self.run_batch_dfam(variants, output_dir)
 
             # Rank designs
             variants = self.rank_designs(variants)

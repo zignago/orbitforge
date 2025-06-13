@@ -11,7 +11,7 @@ import sys
 import json
 from .generator.mission import MissionSpec, Material, load_materials
 from .fea import FastPhysicsValidator, MaterialProperties
-from .dfam.rules import DfamChecker
+from .dfam import DfamPostProcessor
 from .reporting.pdf_report import generate_report
 from dataclasses import asdict, is_dataclass
 from rich import print
@@ -185,7 +185,9 @@ def run_mission(
 
         # Run multi-design workflow
         generator = MultiDesignGenerator(spec, multi, seed)
-        summary_file = generator.run_complete_workflow(outdir, run_fea=check)
+        summary_file = generator.run_complete_workflow(
+            outdir, run_fea=check, run_dfam=dfam
+        )
 
         # Load and display results
         with open(summary_file) as f:
@@ -197,6 +199,7 @@ def run_mission(
         table.add_column("Mass (kg)")
         table.add_column("Max Stress (MPa)")
         table.add_column("Status")
+        table.add_column("DfAM", justify="center")
         table.add_column("Rail (mm)")
         table.add_column("Deck (mm)")
         table.add_column("Material")
@@ -217,11 +220,20 @@ def run_mission(
                 )
             )
 
+            dfam_status = design.get("dfam_status", "NOT_RUN")
+            dfam_color = {
+                "PASS": "green",
+                "FAIL": "red",
+                "ERROR": "red",
+                "NOT_RUN": "dim",
+            }.get(dfam_status, "white")
+
             table.add_row(
                 design["design"],
                 mass_str,
                 stress_str,
                 f"[{status_color}]{status}[/]",
+                f"[{dfam_color}]{dfam_status}[/{dfam_color}]",
                 f"{design['rail_mm']:.2f}",
                 f"{design['deck_mm']:.2f}",
                 design["material"],
@@ -333,25 +345,46 @@ def run_mission(
 
             # Run DfAM checks if requested
             if dfam:
-                console.print("\nRunning DfAM checks...")
+                console.print("\nRunning DfAM post-processing...")
                 try:
-                    checker = DfamChecker(design_dir / "frame.stl")
-                    dfam_results = checker.run_all_checks()
-
-                    # Save results
-                    dfam_file = design_dir / "manufacturability.json"
-                    with open(dfam_file, "w") as f:
-                        json.dump(dfam_results, f, indent=2)
+                    processor = DfamPostProcessor()
+                    dfam_results = processor.process_design(
+                        design_dir, step_file, base_name="frame"
+                    )
 
                     # Print summary
-                    console.print("\n[bold]DfAM Check Results:[/]")
-                    console.print(
-                        f"Status: [{'green' if dfam_results['status'] == 'PASS' else 'red'}]{dfam_results['status']}[/]"
+                    console.print("\n[bold]DfAM Post-Processing Results:[/]")
+                    status_color = (
+                        "green" if dfam_results["dfam_status"] == "PASS" else "red"
                     )
-                    console.print(f"Errors: {dfam_results['error_count']}")
-                    console.print(f"Warnings: {dfam_results['warning_count']}")
+                    console.print(
+                        f"Status: [{status_color}]{dfam_results['dfam_status']}[/]"
+                    )
 
-                    if dfam_results["violations"]:
+                    if "error_count" in dfam_results:
+                        console.print(f"Errors: {dfam_results['error_count']}")
+                        console.print(f"Warnings: {dfam_results['warning_count']}")
+                        console.print(
+                            f"Wall thickness: {dfam_results['wall_thickness']}"
+                        )
+                        console.print(
+                            f"Overhang check: {dfam_results['overhang_check']}"
+                        )
+                        console.print(f"Drain holes: {dfam_results['drain_holes']}")
+
+                    if dfam_results.get("stl_exported"):
+                        console.print("✓ STL file ready for 3D printing")
+                    else:
+                        console.print(
+                            "⚠ STL file not suitable for printing (DfAM violations)"
+                        )
+
+                    if dfam_results.get("report_path"):
+                        console.print(
+                            f"Detailed report: [blue]{design_dir / dfam_results['report_path']}[/]"
+                        )
+
+                    if dfam_results.get("violations"):
                         console.print("\nViolations:")
                         for v in dfam_results["violations"]:
                             color = "red" if v["severity"] == "ERROR" else "yellow"
@@ -360,10 +393,10 @@ def run_mission(
                                 f"(value: {v['value']:.2f}, limit: {v['limit']:.2f})"
                             )
 
-                    console.print(f"\nDetailed results saved to [blue]{dfam_file}[/]")
-
                 except Exception as e:
-                    console.print(f"\n[red]Error during DfAM checks:[/] {str(e)}")
+                    console.print(
+                        f"\n[red]Error during DfAM post-processing:[/] {str(e)}"
+                    )
                     if verbose:
                         import traceback
 
