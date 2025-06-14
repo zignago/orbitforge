@@ -92,9 +92,14 @@ class DiffusionGenerator:
             ) -> GeneratedMesh:
                 """Generate a mock CubeSat frame mesh."""
                 # Extract mission parameters
-                orbit_km, payload_vol, delta_v, rail_mm, deck_mm, material_id = (
-                    condition.numpy()
-                )
+                (
+                    orbit_km,
+                    payload_vol,
+                    delta_v,
+                    rail_mm,
+                    deck_mm,
+                    material_id,
+                ) = condition.numpy()
 
                 # Create basic CubeSat frame geometry with variation
                 base_size = 100.0  # 100mm for 1U

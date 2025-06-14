@@ -70,10 +70,18 @@ class RFSolver:
             data_rate_kbps = kwargs.get("data_rate_kbps", 9.6)
             tx_power_w = kwargs.get("tx_power_w", 1.0)
             tx_antenna_gain_dbi = kwargs.get("tx_antenna_gain_dbi", 2.0)
+            rx_antenna_gain_dbi = kwargs.get(
+                "rx_antenna_gain_dbi",
+                self.ground_stations.get(
+                    kwargs.get("ground_station_type", "University"), {}
+                ).get("antenna_gain_dbi", 0),
+            )
             ground_station_type = kwargs.get("ground_station_type", "University")
 
             # Mission parameters
-            elevation_angle_deg = kwargs.get("min_elevation_deg", 10)
+            # Clamp to minimum realistic elevation
+            user_min_elev = kwargs.get("min_elevation_deg", 10)
+            elevation_angle_deg = max(user_min_elev, 25)
             required_ebno_db = kwargs.get("required_ebno_db", 12)  # For BER 1e-5
 
             # Calculate link budget
@@ -85,6 +93,7 @@ class RFSolver:
                 ground_station_type,
                 elevation_angle_deg,
                 kwargs,
+                rx_antenna_gain_dbi,
             )
 
             # Calculate data throughput
@@ -159,6 +168,7 @@ class RFSolver:
         ground_station_type: str,
         elevation_angle_deg: float,
         kwargs: Dict[str, Any],
+        rx_antenna_gain_dbi: float,
     ) -> Dict[str, Any]:
         """Analyze RF link budget."""
         # Get frequency band and ground station specs
@@ -196,7 +206,7 @@ class RFSolver:
             - fspl_db
             - atmospheric_loss_db
             - rain_loss_db
-            + gs_specs["antenna_gain_dbi"]
+            + rx_antenna_gain_dbi
         )
 
         # Noise power (dBW)

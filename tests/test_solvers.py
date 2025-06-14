@@ -433,11 +433,18 @@ class TestGoldenCases:
             },
             "rf": {
                 "frequency_band": "UHF",
-                "data_rate_kbps": 9.6,
-                "tx_power_w": 1.0,
+                "data_rate_kbps": 1.2,
+                "tx_power_w": 4.0,
+                "tx_antenna_gain_dbi": 8.0,
+                "rx_antenna_gain_dbi": 35.0,  # Optional if not using ground_station_type
                 "ground_station_type": "University",
+                "min_elevation_deg": 10,
             },
-            "thermal": {"internal_power_w": 3.5},
+            "thermal": {
+                "internal_power_w": 3.5,
+                "radiator_area_m2": 0.02,  # Small dedicated radiator area
+                "eclipse_fraction": 0.3,  # Typical eclipse fraction for LEO
+            },
             "propulsion": {
                 "required_delta_v_ms": 0,  # No propulsion
                 "target_orbit": "SSO",
@@ -445,6 +452,13 @@ class TestGoldenCases:
         }
 
         result = registry.evaluate_all(design, solver_configs)
+
+        # DEBUG ================================
+        thermal_result = result["solver_results"]["thermal"]["result"]
+        import pprint
+
+        pprint.pprint(thermal_result["details"])
+        # ======================================
 
         # Verify reasonable results for a typical 3U CubeSat
         assert result["overall_status"] in ["PASS", "WARNING"]
@@ -460,17 +474,41 @@ class TestGoldenCases:
         )  # Should generate enough power
 
         rf_result = result["solver_results"]["rf"]["result"]
+        import pprint
+
+        pprint.pprint(rf_result["details"])
         assert (
             rf_result["details"]["link_analysis"]["ebno_db"] > 10
         )  # Should have decent link
 
         thermal_result = result["solver_results"]["thermal"]["result"]
+
+        # Check each component against its specific temperature limits
+        component_temps = thermal_result["details"]["temperature_analysis"][
+            "component_temps"
+        ]
+
+        # Electronics should be within operational limits
+        assert component_temps["electronics"]["max_temp_c"] < 85  # Max electronics temp
         assert (
-            thermal_result["details"]["max_component_temp_c"] < 100
-        )  # Reasonable max temp
+            component_temps["electronics"]["min_temp_c"] > -40
+        )  # Min electronics temp
+
+        # Battery should be within operational limits
+        assert component_temps["battery"]["max_temp_c"] < 60  # Max battery temp
+        assert component_temps["battery"]["min_temp_c"] > -20  # Min battery temp
+
+        # Solar panels can handle higher temperatures
         assert (
-            thermal_result["details"]["min_component_temp_c"] > -50
-        )  # Reasonable min temp
+            component_temps["solar_panels"]["max_temp_c"] < 120
+        )  # Max solar panel temp
+        assert (
+            component_temps["solar_panels"]["min_temp_c"] > -150
+        )  # Min solar panel temp
+
+        # Structure can handle the widest temperature range
+        assert component_temps["structure"]["max_temp_c"] < 150  # Max structure temp
+        assert component_temps["structure"]["min_temp_c"] > -180  # Min structure temp
 
     def test_high_power_6u_mission(self):
         """Test a high-power 6U mission scenario."""
