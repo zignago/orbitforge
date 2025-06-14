@@ -2,7 +2,7 @@
 """Demonstration script for OrbitForge v0.1.3 diffusion generator.
 
 This script demonstrates the complete diffusion-based design generation workflow,
-showcasing all the key features of the MVP v0.1.3 implementation.
+showcasing all the key features of the MVP v0.1.3 (Diffusion Model) implementation.
 """
 
 import json
