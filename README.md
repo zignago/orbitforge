@@ -1,15 +1,17 @@
 # OrbitForge
 
-Generate flight-ready CubeSat structures from mission specifications.
+**Generate flight-ready CubeSat structures from mission specifications.**
+
+OrbitForge helps small satellite teams accelerate design iteration by generating and validating CubeSat frames from a simple mission JSON spec. With CLI-based workflows, built-in physics checks, and manufacturability analysis, it's built to help you get to orbit faster.
 
 ## Features
 
-- Complete structural skeleton for 3U to 6U CubeSats
-- **Multi-design generation**: Generate and compare multiple structural variants per mission
-- Static loading verification against Falcon 9 and Electron environments
-- Thermal expansion checks across standard gradient (-40°C to +60°C)
-- Manufacturability analysis for additive manufacturing
-- Comprehensive PDF reports with mass budget, FEA results, and DfAM checks
+- Rule-based and ML-based geometry generation
+- Static load and thermal expansion validation (fast FEA)
+- Manufacturability checks for additive manufacturing (DfAM)
+- PDF reports with frame drawings, FEA results, DfAM findings
+- Multi-design generation with parametric jittering
+- Artifact logging to local or S3-compatible backends
 
 ## Installation
 
@@ -20,6 +22,18 @@ cd orbitforge
 
 # Install in development mode
 mamba install -c ".[dev]"
+```
+
+## Command-Line Interface
+OrbitForge includes a CLI built with [Typer](https://typer.tiangolo.com). After install, invoke it as:
+
+```bash
+orbitforge <command> [options]
+```
+Get help at any time:
+```bash
+orbitforge --help
+orbitforge <command> --help
 ```
 
 ## Quick Start
@@ -50,10 +64,7 @@ orbitforge run missions/demo_3u.json --check
 # Generate multiple design variants (NEW v0.1.2)
 orbitforge run missions/demo_3u.json --multi 5 --check
 
-# With DfAM checks
-orbitforge run missions/demo_3u.json --dfam
-
-# Generate full report
+# With DfAM checks and full pdf report
 orbitforge run missions/demo_3u.json --check --dfam --report
 ```
 
@@ -102,6 +113,47 @@ outputs/
 │   └── ...
 └── summary.json         # Comparison table
 ```
+
+## CLI Commands
+### `orbitforge run`
+Generate CubeSat structures and run validation/reporting.
+| Option                      | Description                             |
+| --------------------------- | --------------------------------------- |
+| `mission_json` (positional) | Path to mission spec JSON               |
+| `-o, --outdir`              | Output directory (default: `./outputs`) |
+| `--rail`, `--deck`          | Override rail/deck thickness            |
+| `-m, --material`            | Override material (e.g. `Al_6061_T6`)   |
+| `--check`                   | Run static + thermal physics checks     |
+| `--dfam`                    | Run DfAM manufacturability checks       |
+| `--report`                  | Generate PDF report                     |
+| `--multi <int>`             | Create multiple design variants         |
+| `--seed <int>`              | RNG seed for reproducibility            |
+| `--generator diffusion`     | Use ML-based generation                 |
+| `-v, --verbose`             | Show debug logs                         |
+
+Each run generates a DesignRecord with CLI inputs, hashes, and validation outcomes.
+
+### `orbitforge materials`
+- Print a table of available materials, including:
+- Material ID
+- Density
+- Yield Strength
+- Young’s Modulus
+- Description
+
+### `orbitforge fetch`
+Download all artifacts for a previous design run.
+| Option                   | Description                            |
+| ------------------------ | -------------------------------------- |
+| `design_id` (positional) | 8–32 char design hash                  |
+| `-o, --output`           | Destination directory                  |
+| `--storage`              | Override backend (e.g. `s3://bucket/`) |
+
+### `orbitforge list-designs`
+List recent design records in local storage.
+| Option        | Description                             |
+| ------------- | --------------------------------------- |
+| `-n, --limit` | Number of records to show (default: 10) |
 
 ## Development
 
